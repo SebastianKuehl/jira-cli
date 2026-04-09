@@ -156,6 +156,44 @@ func firstNonEmpty(values map[string]string, keys ...string) string {
 	return ""
 }
 
+// FindTicketFile searches for a ticket file by ID across all sprint subdirectories
+// of basePath. Returns the file path if found, or an error if not found.
+func FindTicketFile(basePath, ticketID string) (string, error) {
+	sprints, err := ListSprints(basePath)
+	if err != nil {
+		return "", err
+	}
+	for _, sprint := range sprints {
+		entries, err := os.ReadDir(filepath.Join(basePath, sprint))
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() {
+				continue
+			}
+			name := entry.Name()
+			id := ticketIDFromFilename(name)
+			if !strings.EqualFold(id, ticketID) {
+				continue
+			}
+			filePath := filepath.Join(basePath, sprint, name)
+			info, err := os.Lstat(filePath)
+			if err != nil {
+				return "", err
+			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				return "", fmt.Errorf("ticket file %q must not be a symlink", name)
+			}
+			if !info.Mode().IsRegular() {
+				continue
+			}
+			return filePath, nil
+		}
+	}
+	return "", fmt.Errorf("ticket %q not found locally", ticketID)
+}
+
 func ticketIDFromFilename(name string) string {
 	ext := filepath.Ext(name)
 	if ext == "" {

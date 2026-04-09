@@ -34,6 +34,7 @@ type Sprint struct {
 	ID    int    `json:"id"`
 	Name  string `json:"name"`
 	State string `json:"state"`
+	Goal  string `json:"goal"`
 }
 
 type IssueTicket struct {

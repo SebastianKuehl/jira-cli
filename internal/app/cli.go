@@ -15,6 +15,7 @@ import (
 	"github.com/sebastian/jira-cli/internal/config"
 	"github.com/sebastian/jira-cli/internal/env"
 	"github.com/sebastian/jira-cli/internal/jira"
+	"github.com/sebastian/jira-cli/internal/tickets"
 )
 
 type App struct {
@@ -535,8 +536,72 @@ type CatCmd struct {
 }
 
 func (c *CatCmd) Run(ctx *Context) error {
-	_ = ctx
-	return jira.ErrNotImplemented
+	projectPath, err := ctx.ProjectPath()
+	if err != nil {
+		return err
+	}
+
+	if isTicketID(c.Target) {
+		path, err := tickets.FindTicketFile(projectPath, c.Target)
+		if err != nil {
+			return err
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		fmt.Print(string(content))
+		return nil
+	}
+
+	// Treat target as a sprint name — fetch the sprint goal from Jira.
+	client, err := ctx.JiraClient()
+	if err != nil {
+		return err
+	}
+	projectKey, err := ensureProject(ctx, client)
+	if err != nil {
+		return err
+	}
+	boardID, err := ensureBoard(ctx, client, projectKey)
+	if err != nil {
+		return err
+	}
+	sprints, err := client.ListSprints(context.Background(), boardID)
+	if err != nil {
+		return err
+	}
+	for _, sprint := range sprints {
+		if strings.EqualFold(sprint.Name, c.Target) || strconv.Itoa(sprint.ID) == c.Target {
+			if strings.TrimSpace(sprint.Goal) == "" {
+				fmt.Println("(no goal set for this sprint)")
+			} else {
+				fmt.Println(sprint.Goal)
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("sprint %q not found", c.Target)
+}
+
+// isTicketID returns true when s looks like a Jira ticket key (e.g. PROJ-123 or proj-123).
+func isTicketID(s string) bool {
+	upper := strings.ToUpper(s)
+	dash := strings.LastIndex(upper, "-")
+	if dash <= 0 || dash == len(upper)-1 {
+		return false
+	}
+	for _, ch := range upper[:dash] {
+		if (ch < 'A' || ch > 'Z') && (ch < '0' || ch > '9') && ch != '_' {
+			return false
+		}
+	}
+	for _, ch := range upper[dash+1:] {
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 type MoveCmd struct {
