@@ -1,6 +1,7 @@
 package jira
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -48,6 +49,13 @@ type IssueTicket struct {
 	Priority    string
 	Labels      []string
 	URL         string
+}
+
+type User struct {
+	Name        string `json:"name"`
+	AccountID   string `json:"accountId"`
+	DisplayName string `json:"displayName"`
+	EmailAddr   string `json:"emailAddress"`
 }
 
 func NewClient(baseURL, token string) *Client {
@@ -207,57 +215,7 @@ func (c *Client) ListSprints(ctx context.Context, boardID int) ([]Sprint, error)
 	return out, nil
 }
 
-// GetTicket fetches a single Jira issue by key.
-func (c *Client) GetTicket(ctx context.Context, issueKey string) (IssueTicket, error) {
-	if c.BaseURL == "" || c.Token == "" {
-		return IssueTicket{}, errors.New("missing jira credentials")
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		fmt.Sprintf("%s/rest/api/2/issue/%s", c.BaseURL, issueKey), nil)
-	if err != nil {
-		return IssueTicket{}, err
-	}
-	req.Header.Set("Authorization", "Bearer "+c.Token)
-	req.Header.Set("Accept", "application/json")
-	resp, err := c.HTTPClient.Do(req)
-	if err != nil {
-		return IssueTicket{}, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		return IssueTicket{}, fmt.Errorf("jira get issue failed with status %s", resp.Status)
-	}
-	var parsed struct {
-		Key    string `json:"key"`
-		Fields struct {
-			Summary string `json:"summary"`
-			Status  struct {
-				Name string `json:"name"`
-			} `json:"status"`
-			Assignee *struct {
-				DisplayName string `json:"displayName"`
-			} `json:"assignee"`
-			Reporter *struct {
-				DisplayName string `json:"displayName"`
-			} `json:"reporter"`
-		} `json:"fields"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
-		return IssueTicket{}, err
-	}
-	ticket := IssueTicket{
-		ID:    parsed.Key,
-		Title: parsed.Fields.Summary,
-		State: parsed.Fields.Status.Name,
-	}
-	if parsed.Fields.Assignee != nil {
-		ticket.Assignee = parsed.Fields.Assignee.DisplayName
-	}
-	if parsed.Fields.Reporter != nil {
-		ticket.Reporter = parsed.Fields.Reporter.DisplayName
-	}
-	return ticket, nil
-}
+
 
 type Transition struct {
 	ID   string `json:"id"`
@@ -506,9 +464,9 @@ func decodeDescription(raw json.RawMessage) string {
 }
 
 type adfNode struct {
-	Type    string            `json:"type"`
-	Text    string            `json:"text"`
-	Content []adfNode         `json:"content"`
+	Type    string                 `json:"type"`
+	Text    string                 `json:"text"`
+	Content []adfNode              `json:"content"`
 	Attrs   map[string]interface{} `json:"attrs"`
 }
 
@@ -530,4 +488,129 @@ func extractADFText(n *adfNode) string {
 		sb.WriteString("\n")
 	}
 	return sb.String()
+}
+
+func (c *Client) GetCurrentUser(ctx context.Context) (User, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/rest/api/2/myself", nil)
+	if err != nil {
+		return User{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	req.Header.Set("Accept", "application/json")
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return User{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return User{}, fmt.Errorf("get current user failed with status %s", resp.Status)
+	}
+	var u User
+	if err := json.NewDecoder(resp.Body).Decode(&u); err != nil {
+		return User{}, err
+	}
+	return u, nil
+}
+
+// SearchAssignableUsers fetches users that can be assigned to issueKey, optionally
+// filtered by query. Uses the internal Jira endpoint which returns a {"users":[...]}
+// envelope and supports server-side filtering via the query parameter.
+func (c *Client) SearchAssignableUsers(ctx context.Context, issueKey, query string) ([]User, error) {
+	u, err := url.Parse(c.BaseURL + "/rest/internal/2/users/assignee")
+	if err != nil {
+		return nil, err
+	}
+	q := u.Query()
+	q.Set("issueKey", issueKey)
+	q.Set("maxResults", "100")
+	q.Set("query", query)
+	u.RawQuery = q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	req.Header.Set("Accept", "application/json")
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("list assignable users failed with status %s", resp.Status)
+	}
+	var envelope struct {
+		Users []User `json:"users"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+		return nil, err
+	}
+	return envelope.Users, nil
+}
+
+func (c *Client) SearchUsers(ctx context.Context, query string) ([]User, error) {
+	u, err := url.Parse(c.BaseURL + "/rest/api/2/user/search")
+	if err != nil {
+		return nil, err
+	}
+	q := u.Query()
+	q.Set("query", query)
+	q.Set("maxResults", "20")
+	u.RawQuery = q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	req.Header.Set("Accept", "application/json")
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("user search failed with status %s", resp.Status)
+	}
+	var users []User
+	if err := json.NewDecoder(resp.Body).Decode(&users); err != nil {
+		return nil, err
+	}
+	return users, nil
+}
+
+// AssignTicket assigns a Jira issue to the given user. Pass nil to unassign.
+func (c *Client) AssignTicket(ctx context.Context, issueKey string, user *User) error {
+	var body []byte
+	var err error
+	if user == nil {
+		body, err = json.Marshal(map[string]interface{}{"name": nil})
+	} else if user.AccountID != "" {
+		body, err = json.Marshal(map[string]string{"accountId": user.AccountID})
+	} else {
+		body, err = json.Marshal(map[string]string{"name": user.Name})
+	}
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut,
+		fmt.Sprintf("%s/rest/api/2/issue/%s/assignee", c.BaseURL, issueKey),
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("assign ticket failed with status %s", resp.Status)
+	}
+	return nil
 }

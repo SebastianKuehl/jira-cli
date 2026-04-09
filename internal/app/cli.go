@@ -683,24 +683,6 @@ func printTicket(t jira.IssueTicket) {
 }
 
 // isTicketID returns true when s looks like a Jira ticket key (e.g. PROJ-123 or proj-123).
-func isTicketID(s string) bool {
-	upper := strings.ToUpper(s)
-	dash := strings.LastIndex(upper, "-")
-	if dash <= 0 || dash == len(upper)-1 {
-		return false
-	}
-	for _, ch := range upper[:dash] {
-		if (ch < 'A' || ch > 'Z') && (ch < '0' || ch > '9') && ch != '_' {
-			return false
-		}
-	}
-	for _, ch := range upper[dash+1:] {
-		if ch < '0' || ch > '9' {
-			return false
-		}
-	}
-	return true
-}
 
 type MoveCmd struct {
 	ID string `arg:"" help:"Ticket ID."`
@@ -755,14 +737,124 @@ func (c *MoveCmd) Run(ctx *Context) error {
 	return nil
 }
 
+// pickAssignableUser shows an interactive, searchable list of users assignable to issueKey.
+// The user can type a number to select or a search term to re-filter the list.
+func pickAssignableUser(client *jira.Client, issueKey string) (jira.User, error) {
+	reader := bufio.NewReader(os.Stdin)
+	query := ""
+	for {
+		users, err := client.SearchAssignableUsers(context.Background(), issueKey, query)
+		if err != nil {
+			return jira.User{}, fmt.Errorf("could not list assignable users: %w", err)
+		}
+		if len(users) == 0 {
+			if query == "" {
+				return jira.User{}, fmt.Errorf("no assignable users found for %s", issueKey)
+			}
+			fmt.Printf("  (no results for %q)\n", query)
+			query = ""
+			continue
+		}
+		if query != "" {
+			fmt.Printf("Results for %q:\n", query)
+		} else {
+			fmt.Printf("Assignable users for %s:\n", issueKey)
+		}
+		for i, u := range users {
+			fmt.Printf("  %d) %s\n", i+1, u.DisplayName)
+		}
+		fmt.Print("Enter number to select, or type a name to search (empty to cancel): ")
+		raw, err := reader.ReadString('\n')
+		if err != nil {
+			return jira.User{}, err
+		}
+		input := strings.TrimSpace(raw)
+		if input == "" {
+			return jira.User{}, errors.New("assignment cancelled")
+		}
+		if n, err := strconv.Atoi(input); err == nil {
+			if n < 1 || n > len(users) {
+				fmt.Printf("  (invalid number, valid range is 1–%d)\n", len(users))
+				continue
+			}
+			return users[n-1], nil
+		}
+		// Treat as a new search query.
+		query = input
+	}
+}
+
 type AssignCmd struct {
 	ID   string `arg:"" help:"Ticket ID."`
-	User string `arg:"" optional:"" help:"User; defaults to invoking user."`
+	User string `arg:"" optional:"" help:"User to assign; omit to pick from a list."`
 }
 
 func (c *AssignCmd) Run(ctx *Context) error {
-	_ = ctx
-	return jira.ErrNotImplemented
+	client, err := ctx.JiraClient()
+	if err != nil {
+		return err
+	}
+
+	var user jira.User
+	if c.User == "" {
+		if !stdinIsTerminal() {
+			return errors.New("no user specified; provide a user argument or run interactively to pick from a list")
+		}
+		user, err = pickAssignableUser(client, c.ID)
+		if err != nil {
+			return err
+		}
+	} else {
+		users, err := client.SearchAssignableUsers(context.Background(), c.ID, c.User)
+		if err != nil {
+			return fmt.Errorf("user search failed: %w", err)
+		}
+		if len(users) == 0 {
+			return fmt.Errorf("no users found matching %q", c.User)
+		}
+		if len(users) == 1 {
+			user = users[0]
+		} else {
+			// Try to find an exact match before prompting.
+			var exact []jira.User
+			q := strings.ToLower(c.User)
+			for _, u := range users {
+				if strings.ToLower(u.Name) == q ||
+					strings.ToLower(u.EmailAddr) == q ||
+					strings.ToLower(u.DisplayName) == q {
+					exact = append(exact, u)
+				}
+			}
+			if len(exact) == 1 {
+				user = exact[0]
+			} else {
+				if !stdinIsTerminal() {
+					return fmt.Errorf("multiple users found matching %q; run interactively to select one", c.User)
+				}
+				fmt.Printf("Multiple users found for %q:\n", c.User)
+				for i, u := range users {
+					fmt.Printf("  %d) %s (%s)\n", i+1, u.DisplayName, u.EmailAddr)
+				}
+				reader := bufio.NewReader(os.Stdin)
+				fmt.Print("Select user number: ")
+				raw, err := reader.ReadString('\n')
+				if err != nil {
+					return err
+				}
+				selected, err := strconv.Atoi(strings.TrimSpace(raw))
+				if err != nil || selected < 1 || selected > len(users) {
+					return errors.New("invalid user selection")
+				}
+				user = users[selected-1]
+			}
+		}
+	}
+
+	if err := client.AssignTicket(context.Background(), c.ID, &user); err != nil {
+		return err
+	}
+	fmt.Printf("Assigned %s to %s\n", c.ID, user.DisplayName)
+	return nil
 }
 
 type UnassignCmd struct {
