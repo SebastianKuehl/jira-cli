@@ -1137,6 +1137,7 @@ func (c *LsCmd) Run(ctx *Context) error {
 	if err != nil {
 		return err
 	}
+	fmt.Printf("%s (%d)\n", selected.Name, selected.ID)
 	for i, ticket := range list {
 		fmt.Printf("%s %s\n", ticket.ID, ticket.Title)
 		if !c.Verbose {
