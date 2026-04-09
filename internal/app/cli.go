@@ -15,6 +15,7 @@ import (
 	"github.com/sebastian/jira-cli/internal/config"
 	"github.com/sebastian/jira-cli/internal/env"
 	"github.com/sebastian/jira-cli/internal/jira"
+	"github.com/sebastian/jira-cli/internal/tickets"
 )
 
 type App struct {
@@ -218,8 +219,48 @@ type LsCmd struct {
 }
 
 func (c *LsCmd) Run(ctx *Context) error {
-	_ = ctx
-	return jira.ErrNotImplemented
+	projectPath, err := ctx.ProjectPath()
+	if err != nil {
+		return err
+	}
+
+	if c.Sprint == "" {
+		sprints, err := tickets.ListSprints(projectPath)
+		if err != nil {
+			return err
+		}
+		for _, sprint := range sprints {
+			fmt.Println(sprint)
+		}
+		return nil
+	}
+
+	list, err := tickets.ListTickets(projectPath, c.Sprint)
+	if err != nil {
+		return err
+	}
+	for i, ticket := range list {
+		fmt.Printf("%s %s\n", ticket.ID, ticket.Title)
+		if !c.Verbose {
+			continue
+		}
+		fmt.Printf("  assignee: %s | reporter: %s\n", emptyFallback(ticket.Assignee), emptyFallback(ticket.Reporter))
+		fmt.Printf("  state: %s\n", emptyFallback(ticket.State))
+		if ticket.PRLink != "" {
+			fmt.Printf("  pr: %s\n", ticket.PRLink)
+		}
+		if i < len(list)-1 {
+			fmt.Println()
+		}
+	}
+	return nil
+}
+
+func emptyFallback(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "-"
+	}
+	return value
 }
 
 type CatCmd struct {
