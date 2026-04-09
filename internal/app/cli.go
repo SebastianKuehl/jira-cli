@@ -403,11 +403,203 @@ type FetchCmd struct {
 }
 
 func (c *FetchCmd) Run(ctx *Context) error {
-	_, err := ctx.ProjectPath()
+	if strings.TrimSpace(c.Sprint) != "" && strings.TrimSpace(c.Ticket) != "" {
+		return errors.New("provide either a sprint argument or --ticket, not both")
+	}
+	basePath, err := ctx.ProjectPath()
 	if err != nil {
 		return err
 	}
-	return jira.ErrNotImplemented
+	client, err := ctx.JiraClient()
+	if err != nil {
+		return err
+	}
+	projectKey, err := ensureProject(ctx, client)
+	if err != nil {
+		return err
+	}
+	boardID, err := ensureBoard(ctx, client, projectKey)
+	if err != nil {
+		return err
+	}
+	sprints, err := client.ListSprints(context.Background(), boardID)
+	if err != nil {
+		return err
+	}
+
+	if ticketID := strings.TrimSpace(c.Ticket); ticketID != "" {
+		sprint, err := findSprintContainingTicket(context.Background(), client, boardID, sprints, ticketID)
+		if err != nil {
+			return err
+		}
+		ticket, err := client.GetTicket(context.Background(), ticketID)
+		if err != nil {
+			return err
+		}
+		if err := writeFetchedTicket(basePath, *sprint, ticket); err != nil {
+			return err
+		}
+		fmt.Printf("fetched %s into %s\n", ticket.ID, sprintFolderName(*sprint))
+		return nil
+	}
+
+	targets, err := selectedSprints(sprints, c.Sprint)
+	if err != nil {
+		return err
+	}
+	fetched := 0
+	for _, sprint := range targets {
+		list, err := client.ListSprintTickets(context.Background(), boardID, sprint.ID)
+		if err != nil {
+			return err
+		}
+		for _, item := range list {
+			ticket, err := client.GetTicket(context.Background(), item.ID)
+			if err != nil {
+				return err
+			}
+			if err := writeFetchedTicket(basePath, sprint, ticket); err != nil {
+				return err
+			}
+			fetched++
+		}
+	}
+	if len(targets) == 1 {
+		fmt.Printf("fetched %d ticket(s) for %s\n", fetched, targets[0].Name)
+		return nil
+	}
+	fmt.Printf("fetched %d ticket(s) across %d sprint(s)\n", fetched, len(targets))
+	return nil
+}
+
+func selectedSprints(sprints []jira.Sprint, query string) ([]jira.Sprint, error) {
+	if strings.TrimSpace(query) == "" {
+		return sprints, nil
+	}
+	for _, sprint := range sprints {
+		if strings.EqualFold(sprint.Name, query) || strconv.Itoa(sprint.ID) == query {
+			return []jira.Sprint{sprint}, nil
+		}
+	}
+	return nil, fmt.Errorf("sprint %q not found", query)
+}
+
+func findSprintContainingTicket(ctx context.Context, client *jira.Client, boardID int, sprints []jira.Sprint, ticketID string) (*jira.Sprint, error) {
+	for i := range sprints {
+		items, err := client.ListSprintTickets(ctx, boardID, sprints[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range items {
+			if strings.EqualFold(item.ID, ticketID) {
+				return &sprints[i], nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("ticket %q not found in configured board sprints", ticketID)
+}
+
+func sprintFolderName(sprint jira.Sprint) string {
+	name := strings.TrimSpace(sprint.Name)
+	replacer := strings.NewReplacer("/", "-", "\\", "-")
+	name = strings.TrimSpace(replacer.Replace(name))
+	if name == "" || name == "." || name == ".." {
+		return fmt.Sprintf("Sprint-%d", sprint.ID)
+	}
+	return name
+}
+
+func writeFetchedTicket(basePath string, sprint jira.Sprint, ticket jira.IssueTicket) error {
+	dir, err := sprintOutputDir(basePath, sprint)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	targetPath := filepath.Join(dir, ticket.ID+".md")
+	if info, err := os.Lstat(targetPath); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("ticket path %q must not be a symlink", ticket.ID)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("ticket path %q is not a regular file", ticket.ID)
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	body := renderTicketMarkdown(ticket)
+	return os.WriteFile(targetPath, []byte(body), 0o644)
+}
+
+func sprintOutputDir(basePath string, sprint jira.Sprint) (string, error) {
+	baseAbs, err := filepath.Abs(basePath)
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(baseAbs, 0o755); err != nil {
+		return "", err
+	}
+	baseResolved, err := filepath.EvalSymlinks(baseAbs)
+	if err != nil {
+		return "", err
+	}
+	targetAbs := filepath.Join(baseResolved, sprintFolderName(sprint))
+	if info, err := os.Lstat(targetAbs); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return "", fmt.Errorf("sprint path %q must not be a symlink", sprint.Name)
+		}
+		if !info.IsDir() {
+			return "", fmt.Errorf("sprint path %q is not a directory", sprint.Name)
+		}
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	rel, err := filepath.Rel(baseResolved, targetAbs)
+	if err != nil {
+		return "", err
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("invalid sprint path %q", sprint.Name)
+	}
+	return targetAbs, nil
+}
+
+func renderTicketMarkdown(ticket jira.IssueTicket) string {
+	var b strings.Builder
+	b.WriteString("---\n")
+	b.WriteString(fmt.Sprintf("id: %s\n", ticket.ID))
+	b.WriteString(fmt.Sprintf("title: %s\n", ticket.Title))
+	if ticket.Assignee != "" {
+		b.WriteString(fmt.Sprintf("assignee: %s\n", ticket.Assignee))
+	}
+	if ticket.Reporter != "" {
+		b.WriteString(fmt.Sprintf("reporter: %s\n", ticket.Reporter))
+	}
+	if ticket.State != "" {
+		b.WriteString(fmt.Sprintf("workflow_state: %s\n", ticket.State))
+	}
+	if ticket.Priority != "" {
+		b.WriteString(fmt.Sprintf("priority: %s\n", ticket.Priority))
+	}
+	if len(ticket.Labels) > 0 {
+		b.WriteString(fmt.Sprintf("labels: %s\n", strings.Join(ticket.Labels, ", ")))
+	}
+	if ticket.PRLink != "" {
+		b.WriteString(fmt.Sprintf("pull_request_url: %s\n", ticket.PRLink))
+	}
+	if ticket.URL != "" {
+		b.WriteString(fmt.Sprintf("url: %s\n", ticket.URL))
+	}
+	b.WriteString("---\n")
+	if strings.TrimSpace(ticket.Description) != "" {
+		b.WriteString("\n")
+		b.WriteString(ticket.Description)
+		if !strings.HasSuffix(ticket.Description, "\n") {
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
 }
 
 type LsCmd struct {
