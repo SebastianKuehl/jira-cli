@@ -38,3 +38,13 @@ Optional install target directory:
 - validates Jira credentials first (`JIRA_BASE_URL`, `JIRA_TOKEN`)
 - fetches projects and prompts for default project selection
 - prompts for project base path (leave empty to use current directory)
+
+`jira fetch`:
+- fetches all sprint tickets into sprint-named folders under the configured base path
+- accepts a sprint name, sprint ID, or embedded numeric sprint fragment
+- when a numeric fragment matches multiple sprints, prints the candidates and prompts for a sprint number
+- accepts `--ticket <id>` to fetch a single ticket into its sprint folder
+
+`jira rm`:
+- accepts `config`, a sprint name, or a ticket ID as the positional target
+- supports `--config`, `--sprint`, and `--ticket` to disambiguate scripted/non-interactive removals
