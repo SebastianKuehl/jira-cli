@@ -1276,16 +1276,22 @@ type LsCmd struct {
 
 func (c *LsCmd) Run(ctx *Context) error {
 	cacheKey := cacheKey(lsCacheCommand(c.Verbose), c.Sprint)
+	basePath, err := ctx.ProjectPath()
+	if err != nil {
+		return err
+	}
 	if !c.UpdateCache {
 		if cached, ok, err := readCommandCache(ctx, cacheKey); err != nil {
 			return err
 		} else if ok {
+			if c.Sprint == "" {
+				cached = annotateSprintListOutput(basePath, cached)
+			}
 			fmt.Print(cached)
 			printCacheNote(cacheKey)
 			return nil
 		}
 	}
-
 	client, err := ctx.JiraClient()
 	if err != nil {
 		return err
@@ -1304,15 +1310,16 @@ func (c *LsCmd) Run(ctx *Context) error {
 	}
 
 	if c.Sprint == "" {
-		var b strings.Builder
+		var raw strings.Builder
 		for _, sprint := range sprints {
-			b.WriteString(sprint.Name)
-			b.WriteByte('\n')
+			raw.WriteString(sprint.Name)
+			raw.WriteByte('\n')
 		}
-		output := b.String()
-		if err := writeCommandCache(ctx, cacheKey, output); err != nil {
+		rawOutput := raw.String()
+		if err := writeCommandCache(ctx, cacheKey, rawOutput); err != nil {
 			return err
 		}
+		output := annotateSprintListOutput(basePath, rawOutput)
 		fmt.Print(output)
 		return nil
 	}
@@ -1596,6 +1603,43 @@ func renderLsOutput(sprint jira.Sprint, list []jira.IssueTicket, verbose bool) s
 		}
 	}
 	return b.String()
+}
+
+func localSprintNote(basePath string, sprint jira.Sprint) string {
+	dir, err := expectedSprintDir(basePath, sprint)
+	if err != nil {
+		return ""
+	}
+	info, err := os.Stat(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return ""
+	}
+	if err != nil {
+		return ""
+	}
+	if info.IsDir() {
+		return " ✅ local"
+	}
+	return ""
+}
+
+func expectedSprintDir(basePath string, sprint jira.Sprint) (string, error) {
+	baseAbs, err := filepath.Abs(basePath)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(baseAbs, sprintFolderName(sprint)), nil
+}
+
+func annotateSprintListOutput(basePath, output string) string {
+	lines := strings.Split(output, "\n")
+	for i, line := range lines {
+		if line == "" {
+			continue
+		}
+		lines[i] = line + localSprintNote(basePath, jira.Sprint{Name: line})
+	}
+	return strings.Join(lines, "\n")
 }
 
 func cacheKey(command, target string) string {

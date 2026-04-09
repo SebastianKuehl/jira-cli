@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -112,6 +113,57 @@ func TestResolveSprintSelectionFindsSingleApproximateSprint(t *testing.T) {
 	}
 }
 
+func TestLsCmdRunMarksLocalSprintsInList(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/rest/agile/1.0/board":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"isLast":true,"values":[{"id":17,"name":"Backend Board"}]}`))
+		case r.URL.Path == "/rest/agile/1.0/board/17/sprint":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"isLast":true,"values":[{"id":23,"name":"Sprint Alpha"},{"id":24,"name":"Sprint Beta"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "Sprint Alpha"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := &Context{CLI: &CLI{
+		BaseURL: server.URL,
+		Token:   "token",
+		Cfg: config.Config{
+			Project:  "PROJ",
+			BasePath: root,
+			BoardID:  17,
+			BoardByProject: map[string]int{
+				"PROJ": 17,
+			},
+		},
+	}}
+
+	output := captureStdout(t, func() {
+		if err := (&LsCmd{}).Run(ctx); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected two sprint lines, got %q", output)
+	}
+	if lines[0] != "Sprint Alpha ✅ local" {
+		t.Fatalf("expected local sprint marker, got %q", lines[0])
+	}
+	if lines[1] != "Sprint Beta" {
+		t.Fatalf("expected unmarked remote sprint, got %q", lines[1])
+	}
+}
+
 func TestLsCmdRunUsesCachedOutput(t *testing.T) {
 	cacheDir := t.TempDir()
 	t.Setenv("JIRA_CONFIG_DIR", cacheDir)
@@ -187,6 +239,40 @@ func TestLsCmdRunUpdateCacheOverridesCachedOutput(t *testing.T) {
 	}
 	if !ok || !strings.Contains(cached, "Sprint Alpha (23)") {
 		t.Fatalf("expected refreshed cache, got ok=%v cached=%q", ok, cached)
+	}
+}
+
+func TestLsCmdRunCachedSprintListReappliesLocalMarker(t *testing.T) {
+	cacheDir := t.TempDir()
+	root := t.TempDir()
+	t.Setenv("JIRA_CONFIG_DIR", cacheDir)
+
+	ctx := &Context{CLI: &CLI{
+		BaseURL: "https://example.atlassian.net",
+		Cfg: config.Config{
+			Project:  "PROJ",
+			BasePath: root,
+			BoardID:  17,
+		},
+	}}
+	if err := writeCommandCache(ctx, cacheKey("ls", ""), "Sprint Alpha\nSprint Beta\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "Sprint Beta"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	output := captureStdout(t, func() {
+		if err := (&LsCmd{}).Run(ctx); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	if !strings.Contains(output, "Sprint Beta ✅ local") {
+		t.Fatalf("expected cached output to reapply local marker, got %q", output)
+	}
+	if strings.Contains(output, "Sprint Alpha ✅ local") {
+		t.Fatalf("expected non-local sprint to stay unmarked, got %q", output)
 	}
 }
 
