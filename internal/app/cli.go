@@ -1593,7 +1593,8 @@ func renderLsOutput(sprint jira.Sprint, list []jira.IssueTicket, verbose bool) s
 		if !verbose {
 			continue
 		}
-		fmt.Fprintf(&b, "  assignee: %s | reporter: %s\n", emptyFallback(ticket.Assignee), emptyFallback(ticket.Reporter))
+		fmt.Fprintf(&b, "  assignee: %s\n", emptyFallback(ticket.Assignee))
+		fmt.Fprintf(&b, "  reporter: %s\n", emptyFallback(ticket.Reporter))
 		fmt.Fprintf(&b, "  state: %s\n", emptyFallback(ticket.State))
 		if ticket.PRLink != "" {
 			fmt.Fprintf(&b, "  pr: %s\n", ticket.PRLink)

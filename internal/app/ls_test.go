@@ -63,6 +63,50 @@ func TestLsCmdRunPrintsSprintHeaderBeforeTickets(t *testing.T) {
 	}
 }
 
+func TestLsCmdRunVerbosePrintsAssigneeAndReporterOnSeparateLines(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/rest/agile/1.0/board":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"isLast":true,"values":[{"id":17,"name":"Backend Board"}]}`))
+		case r.URL.Path == "/rest/agile/1.0/board/17/sprint":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"isLast":true,"values":[{"id":23,"name":"Sprint Alpha"}]}`))
+		case r.URL.Path == "/rest/agile/1.0/board/17/sprint/23/issue":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"total":1,"issues":[{"key":"PROJ-1","fields":{"summary":"Implement ls","status":{"name":"In Progress"},"assignee":{"displayName":"Alice"},"reporter":{"displayName":"Bob"}}}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	ctx := &Context{CLI: &CLI{
+		BaseURL: server.URL,
+		Token:   "token",
+		Cfg: config.Config{
+			Project: "PROJ",
+			BoardID: 17,
+			BoardByProject: map[string]int{
+				"PROJ": 17,
+			},
+		},
+	}}
+
+	output := captureStdout(t, func() {
+		if err := (&LsCmd{Sprint: "Sprint Alpha", Verbose: true, UpdateCache: true}).Run(ctx); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	if !strings.Contains(output, "  assignee: Alice\n  reporter: Bob\n  state: In Progress\n") {
+		t.Fatalf("expected assignee/reporter/state on separate lines, got %q", output)
+	}
+	if strings.Contains(output, "assignee: Alice | reporter: Bob") {
+		t.Fatalf("expected combined assignee/reporter line removed, got %q", output)
+	}
+}
+
 func TestResolveSprintSelectionPromptsForAmbiguousNumericFragment(t *testing.T) {
 	sprints := []jira.Sprint{
 		{ID: 23, Name: "Sprint 120 Alpha"},
