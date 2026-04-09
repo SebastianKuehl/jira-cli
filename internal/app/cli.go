@@ -866,6 +866,8 @@ func stdinIsTerminal() bool {
 	return (info.Mode() & os.ModeCharDevice) != 0
 }
 
+var stdinIsTerminalFunc = stdinIsTerminal
+
 type FetchCmd struct {
 	Target string `arg:"" optional:"" help:"Sprint name or ticket ID to fetch."`
 	Ticket string `name:"ticket" help:"Explicitly fetch one ticket by ID."`
@@ -962,9 +964,24 @@ func (c *FetchCmd) fetchTicket(basePath string, client *jira.Client, boardID int
 }
 
 func (c *FetchCmd) fetchSprints(basePath string, client *jira.Client, boardID int, sprints []jira.Sprint, target string) error {
-	targets, err := selectedSprints(sprints, target)
-	if err != nil {
-		return err
+	var (
+		targets []jira.Sprint
+		err     error
+	)
+	if strings.TrimSpace(target) == "" {
+		targets, err = selectedSprints(sprints, target)
+		if err != nil {
+			return err
+		}
+	} else {
+		selected, err := resolveFetchSprintSelection(sprints, target, bufio.NewReader(os.Stdin), os.Stdout, stdinIsTerminalFunc())
+		if err != nil {
+			return err
+		}
+		if selected == nil {
+			return fmt.Errorf("sprint %q not found", target)
+		}
+		targets = []jira.Sprint{*selected}
 	}
 	fetched := 0
 	for _, sprint := range targets {
@@ -989,6 +1006,29 @@ func (c *FetchCmd) fetchSprints(basePath string, client *jira.Client, boardID in
 	}
 	fmt.Printf("fetched %d ticket(s) across %d sprint(s)\n", fetched, len(targets))
 	return nil
+}
+
+func resolveFetchSprintSelection(sprints []jira.Sprint, input string, reader *bufio.Reader, out io.Writer, interactive bool) (*jira.Sprint, error) {
+	targets, err := selectedSprints(sprints, input)
+	if err == nil {
+		if len(targets) == 0 {
+			return nil, nil
+		}
+		return &targets[0], nil
+	}
+	if !interactive || !strings.Contains(err.Error(), "ambiguous") {
+		return nil, err
+	}
+
+	trimmed := strings.TrimSpace(input)
+	matches := findApproximateSprints(latestSprints(sprints, 10), trimmed)
+	if len(matches) <= 1 {
+		matches = findApproximateSprints(sprints, trimmed)
+	}
+	if len(matches) <= 1 {
+		return nil, err
+	}
+	return pickSprintMatch(matches, reader, out, trimmed)
 }
 
 func findExactSprint(sprints []jira.Sprint, query string) *jira.Sprint {
@@ -1255,7 +1295,7 @@ func (c *LsCmd) Run(ctx *Context) error {
 		}
 		return nil
 	}
-	selected, err := resolveSprintSelection(sprints, c.Sprint, bufio.NewReader(os.Stdin), os.Stdout, stdinIsTerminal())
+	selected, err := resolveSprintSelection(sprints, c.Sprint, bufio.NewReader(os.Stdin), os.Stdout, stdinIsTerminalFunc())
 	if err != nil {
 		return err
 	}

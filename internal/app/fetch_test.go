@@ -1,7 +1,10 @@
 package app
 
 import (
+	"bufio"
+	"bytes"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -381,6 +384,105 @@ func TestFetchCmdRunApproximatesSprintTarget(t *testing.T) {
 	}
 }
 
+func TestFetchCmdRunPromptsForAmbiguousSprintTarget(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/rest/agile/1.0/board":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"isLast":true,"values":[{"id":17,"name":"Backend Board"}]}`))
+		case r.URL.Path == "/rest/agile/1.0/board/17/sprint":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"isLast":true,"values":[{"id":120,"name":"Sprint 120"},{"id":201,"name":"Sprint 201"},{"id":1201,"name":"Sprint 120.1"}]}`))
+		case r.URL.Path == "/rest/agile/1.0/board/17/sprint/1201/issue":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"total":1,"issues":[{"key":"PROJ-1201","fields":{"summary":"Chosen sprint","status":{"name":"Todo"}}}]}`))
+		case r.URL.Path == "/rest/agile/1.0/board/17/sprint/120/issue":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"total":1,"issues":[{"key":"PROJ-120","fields":{"summary":"Wrong sprint","status":{"name":"Todo"}}}]}`))
+		case r.URL.Path == "/rest/agile/1.0/board/17/sprint/201/issue":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"total":1,"issues":[{"key":"PROJ-201","fields":{"summary":"Wrong sprint","status":{"name":"Todo"}}}]}`))
+		case r.URL.Path == "/rest/api/2/issue/PROJ-1201":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"key":"PROJ-1201","fields":{"summary":"Chosen sprint","description":"Picked interactively","labels":[],"status":{"name":"Todo"}}}`))
+		case r.URL.Path == "/rest/api/2/issue/PROJ-120":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"key":"PROJ-120","fields":{"summary":"Wrong sprint","description":"Should not fetch","labels":[],"status":{"name":"Todo"}}}`))
+		case r.URL.Path == "/rest/api/2/issue/PROJ-201":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"key":"PROJ-201","fields":{"summary":"Wrong sprint","description":"Should not fetch","labels":[],"status":{"name":"Todo"}}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	ctx := &Context{CLI: &CLI{
+		BaseURL: server.URL,
+		Token:   "token",
+		Cfg: config.Config{
+			Project:  "PROJ",
+			BasePath: root,
+			BoardID:  17,
+			BoardByProject: map[string]int{
+				"PROJ": 17,
+			},
+		},
+	}}
+
+	origStdin := os.Stdin
+	origStdout := os.Stdout
+	origInteractive := stdinIsTerminalFunc
+	inR, inW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	outR, outW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer inR.Close()
+	defer outR.Close()
+	os.Stdin = inR
+	os.Stdout = outW
+	defer func() {
+		os.Stdin = origStdin
+		os.Stdout = origStdout
+		stdinIsTerminalFunc = origInteractive
+	}()
+	stdinIsTerminalFunc = func() bool { return true }
+
+	done := make(chan string, 1)
+	go func() {
+		var buf bytes.Buffer
+		_, _ = io.Copy(&buf, outR)
+		done <- buf.String()
+	}()
+
+	if _, err := inW.WriteString("120.1\n1\n"); err != nil {
+		t.Fatal(err)
+	}
+	_ = inW.Close()
+
+	cmd := &FetchCmd{Target: "20"}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = outW.Close()
+	output := <-done
+	if !strings.Contains(output, `Sprint "20" matches multiple sprints:`) {
+		t.Fatalf("expected prompt output, got %q", output)
+	}
+	if _, err := os.Stat(filepath.Join(root, "Sprint 120.1", "PROJ-1201.md")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "Sprint 120", "PROJ-120.md")); !os.IsNotExist(err) {
+		t.Fatalf("expected Sprint 120 ticket to remain unfetched, stat err=%v", err)
+	}
+}
+
 func TestSelectedSprintsRejectsAmbiguousApproximation(t *testing.T) {
 	sprints := []jira.Sprint{
 		{ID: 201, Name: "E51(S4).DevS201"},
@@ -411,6 +513,32 @@ func TestSelectedSprintsPrefersLatestTenForApproximation(t *testing.T) {
 	}
 	if len(selected) != 1 || selected[0].Name != "E51(S4).DevS201" {
 		t.Fatalf("expected latest ten window to win, got %#v", selected)
+	}
+}
+
+func TestResolveFetchSprintSelectionPrefersLatestTenBeforePrompting(t *testing.T) {
+	sprints := []jira.Sprint{
+		{ID: 201, Name: "E51(S4).DevS201", StartDate: time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)},
+	}
+	for i := 0; i < 10; i++ {
+		sprints = append(sprints, jira.Sprint{
+			ID:        300 + i,
+			Name:      fmt.Sprintf("Noise-%d", i),
+			StartDate: time.Date(2026, 4, 20-i, 0, 0, 0, 0, time.UTC),
+		})
+	}
+	sprints = append(sprints, jira.Sprint{ID: 1201, Name: "Legacy201", StartDate: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)})
+
+	var out bytes.Buffer
+	selected, err := resolveFetchSprintSelection(sprints, "201", bufio.NewReader(strings.NewReader("")), &out, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected == nil || selected.ID != 201 {
+		t.Fatalf("expected latest-ten sprint to win, got %#v", selected)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("expected no prompt output, got %q", out.String())
 	}
 }
 
