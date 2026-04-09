@@ -1,0 +1,53 @@
+# JIRA CLI
+
+This CLI fetches Jira tickets to markdown files.
+Markdown tickets are grouped in folders (sprints).
+
+## Tech stack
+- Go
+- kong
+- stdlib HTTP/JSON
+- GoReleaser
+
+## Authentication
+The CLI looks for required fields JIRA_BASE_URL and JIRA_TOKEN in order:
+- command arguments
+- environment variables
+- .env file
+
+## Configuration
+Configuration is stored in the user's home path in the folder `.jira/config`.
+The user can configure the cli:
+- project: if no project is configured, each command has to prompt the user to interactively select from a list of available jira projects. If a project is configured, no prompt occurs
+- project base path: an optional directory where folders and files will be written to for the configured project. Without an base path configured folders and files will be written to the command invokation folder
+
+## Commands
+```sh
+jira --help
+jira test # checks if the environment variables can be used to reach the jira tickets
+jira configure # select a default project from a list of available projects, set a project base path to write the project jira tickets to
+jira fetch # fetches all jira tickets and groups them by sprint
+jira fetch [sprint] # fetches all jira tickets for the specified sprint
+jira fetch --ticket [id] # fetches the specified ticket and places it in the corresponding sprint folder
+jira ls # lists all sprints
+jira ls [sprint] [--verbose|-v] # lists all tickets of sprint [sprint]
+jira cat [sprint|id] # outputs the sprint's goal OR stdouts the ticket properties and body to console
+jira move [id] # prints the ticket's workflow state and allows the user to select the next state from a list of available states
+jira assign [id] [user] # assigns the ticket to user. user is optional: left empty, the invoking user will be assigned
+jira unassign [id] # unassigns the ticket
+```
+
+Specifics for the command `jira ls [sprint]`:
+- prints the list of jira tickets in the format: <id> <title>
+- with flag --verbose or -v:
+    - prints a line with <id><title> 
+    - prints: <assignee> and <reporter>
+    - prints the <workflow state>
+    - optionally prints a link to a pull request
+
+
+## Markdown file
+- file name: the ticket id
+- file structure:
+    - frontmatter properties of the jira ticket and a backlink to the jira ticket
+    - jira ticket body
