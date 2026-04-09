@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/alecthomas/kong"
 	"github.com/sebastian/jira-cli/internal/config"
 	"github.com/sebastian/jira-cli/internal/jira"
 )
@@ -39,6 +40,47 @@ func TestAppRunWithoutArgsPrintsHelp(t *testing.T) {
 	if !strings.Contains(output, "Usage: jira <command> [flags]") {
 		t.Fatalf("expected help output, got %q", output)
 	}
+	if strings.Contains(output, "[<target>]") || strings.Contains(output, " [flags]\n    Remove config, sprint folder, or ticket file.") {
+		t.Fatalf("expected normalized command summaries, got %q", output)
+	}
+	if !strings.Contains(output, "  rm <target>") {
+		t.Fatalf("expected rm summary without optional brackets, got %q", output)
+	}
+}
+
+func TestSubcommandHelpOmitsBracketsAndFlags(t *testing.T) {
+	output := renderHelp(t, []string{"rm"})
+	if strings.Contains(output, "[<target>]") {
+		t.Fatalf("expected target placeholder without brackets, got %q", output)
+	}
+	if strings.Contains(output, "Usage: jira rm <target> [flags]") {
+		t.Fatalf("expected rm usage without [flags], got %q", output)
+	}
+	if !strings.Contains(output, "Usage: jira rm <target>") {
+		t.Fatalf("expected normalized rm usage, got %q", output)
+	}
+}
+
+func renderHelp(t *testing.T, args []string) string {
+	t.Helper()
+
+	parser, err := newParser(&CLI{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	parser.Stdout = &buf
+
+	ctx, err := kong.Trace(parser, args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ctx.PrintUsage(false); err != nil {
+		t.Fatal(err)
+	}
+
+	return buf.String()
 }
 
 func TestFindSprintMatchesExactName(t *testing.T) {

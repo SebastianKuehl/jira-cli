@@ -2,6 +2,7 @@ package app
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -31,10 +32,7 @@ func New() *App {
 }
 
 func (a *App) Run(args []string) error {
-	parser, err := kong.New(&a.cli,
-		kong.Name("jira"),
-		kong.Description("Jira CLI to fetch and sync tickets to markdown."),
-	)
+	parser, err := newParser(&a.cli)
 	if err != nil {
 		return err
 	}
@@ -55,6 +53,52 @@ func (a *App) Run(args []string) error {
 	return ctx.Run(&Context{
 		CLI: &a.cli,
 	})
+}
+
+func newParser(cli *CLI) (*kong.Kong, error) {
+	return kong.New(cli,
+		kong.Name("jira"),
+		kong.Description("Jira CLI to fetch and sync tickets to markdown."),
+		kong.Help(normalizedHelpPrinter(kong.DefaultHelpPrinter)),
+		kong.ShortHelp(normalizedHelpPrinter(kong.DefaultShortHelpPrinter)),
+	)
+}
+
+func normalizedHelpPrinter(printer kong.HelpPrinter) kong.HelpPrinter {
+	return func(options kong.HelpOptions, ctx *kong.Context) error {
+		origStdout := ctx.Stdout
+		var buf bytes.Buffer
+		ctx.Stdout = &buf
+		defer func() {
+			ctx.Stdout = origStdout
+		}()
+
+		if err := printer(options, ctx); err != nil {
+			return err
+		}
+
+		_, err := io.WriteString(origStdout, normalizeHelpOutput(buf.String(), ctx.Model.Name))
+		return err
+	}
+}
+
+func normalizeHelpOutput(output, appName string) string {
+	lines := strings.Split(output, "\n")
+	rootUsagePrefix := "Usage: " + appName + " <command>"
+
+	for i, line := range lines {
+		line = strings.ReplaceAll(line, "[<", "<")
+		line = strings.ReplaceAll(line, ">]", ">")
+		if strings.HasPrefix(line, "  ") {
+			line = strings.ReplaceAll(line, " [flags]", "")
+		}
+		if strings.HasPrefix(line, "Usage: "+appName+" ") && !strings.HasPrefix(line, rootUsagePrefix) {
+			line = strings.ReplaceAll(line, " [flags]", "")
+		}
+		lines[i] = line
+	}
+
+	return strings.Join(lines, "\n")
 }
 
 type CLI struct {
