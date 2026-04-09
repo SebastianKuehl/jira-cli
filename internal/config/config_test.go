@@ -31,3 +31,17 @@ func TestPathUsesConfigDirEnv(t *testing.T) {
 		t.Fatalf("expected config dir override, got %q", path)
 	}
 }
+
+func TestCacheDirUsesConfigDirEnv(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(configDirEnv, dir)
+	t.Setenv(configPathEnv, "")
+
+	cacheDir, err := CacheDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cacheDir != filepath.Join(dir, cacheDirName) {
+		t.Fatalf("expected cache dir under config dir, got %q", cacheDir)
+	}
+}

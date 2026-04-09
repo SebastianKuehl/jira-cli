@@ -10,6 +10,7 @@ import (
 const (
 	dirName       = ".jira"
 	fileName      = "config"
+	cacheDirName  = "cache"
 	configPathEnv = "JIRA_CONFIG_PATH"
 	configDirEnv  = "JIRA_CONFIG_DIR"
 )
@@ -92,4 +93,20 @@ func Save(cfg Config) error {
 		return err
 	}
 	return os.WriteFile(path, b, 0o600)
+}
+
+func Dir() (string, error) {
+	path, err := Path()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Dir(path), nil
+}
+
+func CacheDir() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, cacheDirName), nil
 }

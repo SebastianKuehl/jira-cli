@@ -112,6 +112,94 @@ func TestResolveSprintSelectionFindsSingleApproximateSprint(t *testing.T) {
 	}
 }
 
+func TestLsCmdRunUsesCachedOutput(t *testing.T) {
+	cacheDir := t.TempDir()
+	t.Setenv("JIRA_CONFIG_DIR", cacheDir)
+
+	key := cacheKey("ls", "200")
+	if err := writeCommandCache(ctxForCacheTest(), key, "cached ls output\n"); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := ctxForCacheTest()
+	output := captureStdout(t, func() {
+		if err := (&LsCmd{Sprint: "200"}).Run(ctx); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	if !strings.Contains(output, "cached ls output\n") {
+		t.Fatalf("expected cached ls output, got %q", output)
+	}
+	if !strings.Contains(output, "⚠️ cache hit: ls|200") {
+		t.Fatalf("expected cache note, got %q", output)
+	}
+}
+
+func TestLsCmdRunUpdateCacheOverridesCachedOutput(t *testing.T) {
+	cacheDir := t.TempDir()
+	t.Setenv("JIRA_CONFIG_DIR", cacheDir)
+	if err := writeCommandCache(ctxForCacheTest(), cacheKey("ls", "Sprint Alpha"), "stale\n"); err != nil {
+		t.Fatal(err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/rest/agile/1.0/board":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"isLast":true,"values":[{"id":17,"name":"Backend Board"}]}`))
+		case r.URL.Path == "/rest/agile/1.0/board/17/sprint":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"isLast":true,"values":[{"id":23,"name":"Sprint Alpha"}]}`))
+		case r.URL.Path == "/rest/agile/1.0/board/17/sprint/23/issue":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"total":1,"issues":[{"key":"PROJ-1","fields":{"summary":"fresh","status":{"name":"Todo"}}}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	ctx := &Context{CLI: &CLI{
+		BaseURL: server.URL,
+		Token:   "token",
+		Cfg: config.Config{
+			Project: "PROJ",
+			BoardID: 17,
+			BoardByProject: map[string]int{
+				"PROJ": 17,
+			},
+		},
+	}}
+
+	output := captureStdout(t, func() {
+		if err := (&LsCmd{Sprint: "Sprint Alpha", UpdateCache: true}).Run(ctx); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	if strings.Contains(output, "stale") {
+		t.Fatalf("expected fresh output, got %q", output)
+	}
+	cached, ok, err := readCommandCache(ctx, cacheKey("ls", "Sprint Alpha"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || !strings.Contains(cached, "Sprint Alpha (23)") {
+		t.Fatalf("expected refreshed cache, got ok=%v cached=%q", ok, cached)
+	}
+}
+
+func ctxForCacheTest() *Context {
+	return &Context{CLI: &CLI{
+		BaseURL: "https://example.atlassian.net",
+		Cfg: config.Config{
+			Project: "PROJ",
+			BoardID: 17,
+		},
+	}}
+}
+
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
 

@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -1267,11 +1269,23 @@ func renderTicketMarkdown(ticket jira.IssueTicket) string {
 }
 
 type LsCmd struct {
-	Sprint  string `arg:"" optional:"" help:"Sprint name."`
-	Verbose bool   `short:"v" help:"Verbose output."`
+	Sprint      string `arg:"" optional:"" help:"Sprint name."`
+	Verbose     bool   `short:"v" help:"Verbose output."`
+	UpdateCache bool   `help:"Refresh cached output for this command target."`
 }
 
 func (c *LsCmd) Run(ctx *Context) error {
+	cacheKey := cacheKey(lsCacheCommand(c.Verbose), c.Sprint)
+	if !c.UpdateCache {
+		if cached, ok, err := readCommandCache(ctx, cacheKey); err != nil {
+			return err
+		} else if ok {
+			fmt.Print(cached)
+			printCacheNote(cacheKey)
+			return nil
+		}
+	}
+
 	client, err := ctx.JiraClient()
 	if err != nil {
 		return err
@@ -1290,9 +1304,16 @@ func (c *LsCmd) Run(ctx *Context) error {
 	}
 
 	if c.Sprint == "" {
+		var b strings.Builder
 		for _, sprint := range sprints {
-			fmt.Println(sprint.Name)
+			b.WriteString(sprint.Name)
+			b.WriteByte('\n')
 		}
+		output := b.String()
+		if err := writeCommandCache(ctx, cacheKey, output); err != nil {
+			return err
+		}
+		fmt.Print(output)
 		return nil
 	}
 	selected, err := resolveSprintSelection(sprints, c.Sprint, bufio.NewReader(os.Stdin), os.Stdout, stdinIsTerminalFunc())
@@ -1306,21 +1327,11 @@ func (c *LsCmd) Run(ctx *Context) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("%s (%d)\n", selected.Name, selected.ID)
-	for i, ticket := range list {
-		fmt.Printf("%s %s\n", ticket.ID, ticket.Title)
-		if !c.Verbose {
-			continue
-		}
-		fmt.Printf("  assignee: %s | reporter: %s\n", emptyFallback(ticket.Assignee), emptyFallback(ticket.Reporter))
-		fmt.Printf("  state: %s\n", emptyFallback(ticket.State))
-		if ticket.PRLink != "" {
-			fmt.Printf("  pr: %s\n", ticket.PRLink)
-		}
-		if i < len(list)-1 {
-			fmt.Println()
-		}
+	output := renderLsOutput(*selected, list, c.Verbose)
+	if err := writeCommandCache(ctx, cacheKey, output); err != nil {
+		return err
 	}
+	fmt.Print(output)
 	return nil
 }
 
@@ -1471,10 +1482,22 @@ func emptyFallback(value string) string {
 }
 
 type CatCmd struct {
-	Target string `arg:"" help:"Sprint name or ticket ID."`
+	Target      string `arg:"" help:"Sprint name or ticket ID."`
+	UpdateCache bool   `help:"Refresh cached output for this command target."`
 }
 
 func (c *CatCmd) Run(ctx *Context) error {
+	cacheKey := cacheKey("cat", c.Target)
+	if !c.UpdateCache {
+		if cached, ok, err := readCommandCache(ctx, cacheKey); err != nil {
+			return err
+		} else if ok {
+			fmt.Print(cached)
+			printCacheNote(cacheKey)
+			return nil
+		}
+	}
+
 	client, err := ctx.JiraClient()
 	if err != nil {
 		return err
@@ -1485,7 +1508,11 @@ func (c *CatCmd) Run(ctx *Context) error {
 		if err != nil {
 			return err
 		}
-		printTicket(ticket)
+		output := renderTicket(ticket)
+		if err := writeCommandCache(ctx, cacheKey, output); err != nil {
+			return err
+		}
+		fmt.Print(output)
 		return nil
 	}
 
@@ -1507,35 +1534,129 @@ func (c *CatCmd) Run(ctx *Context) error {
 		return err
 	}
 	if sprint != nil {
+		var output string
 		if strings.TrimSpace(sprint.Goal) == "" {
-			fmt.Println("(no goal set for this sprint)")
+			output = "(no goal set for this sprint)\n"
 		} else {
-			fmt.Println(sprint.Goal)
+			output = sprint.Goal
+			if !strings.HasSuffix(output, "\n") {
+				output += "\n"
+			}
 		}
+		if err := writeCommandCache(ctx, cacheKey, output); err != nil {
+			return err
+		}
+		fmt.Print(output)
 		return nil
 	}
 	return fmt.Errorf("sprint %q not found", c.Target)
 }
 
-func printTicket(t jira.IssueTicket) {
-	fmt.Printf("id:       %s\n", t.ID)
-	fmt.Printf("title:    %s\n", t.Title)
-	fmt.Printf("state:    %s\n", emptyFallback(t.State))
-	fmt.Printf("assignee: %s\n", emptyFallback(t.Assignee))
-	fmt.Printf("reporter: %s\n", emptyFallback(t.Reporter))
+func renderTicket(t jira.IssueTicket) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "id:       %s\n", t.ID)
+	fmt.Fprintf(&b, "title:    %s\n", t.Title)
+	fmt.Fprintf(&b, "state:    %s\n", emptyFallback(t.State))
+	fmt.Fprintf(&b, "assignee: %s\n", emptyFallback(t.Assignee))
+	fmt.Fprintf(&b, "reporter: %s\n", emptyFallback(t.Reporter))
 	if t.Priority != "" {
-		fmt.Printf("priority: %s\n", t.Priority)
+		fmt.Fprintf(&b, "priority: %s\n", t.Priority)
 	}
 	if len(t.Labels) > 0 {
-		fmt.Printf("labels:   %s\n", strings.Join(t.Labels, ", "))
+		fmt.Fprintf(&b, "labels:   %s\n", strings.Join(t.Labels, ", "))
 	}
 	if t.URL != "" {
-		fmt.Printf("url:      %s\n", t.URL)
+		fmt.Fprintf(&b, "url:      %s\n", t.URL)
 	}
 	if strings.TrimSpace(t.Description) != "" {
-		fmt.Println()
-		fmt.Println(t.Description)
+		b.WriteByte('\n')
+		b.WriteString(t.Description)
+		if !strings.HasSuffix(t.Description, "\n") {
+			b.WriteByte('\n')
+		}
 	}
+	return b.String()
+}
+
+func renderLsOutput(sprint jira.Sprint, list []jira.IssueTicket, verbose bool) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s (%d)\n", sprint.Name, sprint.ID)
+	for i, ticket := range list {
+		fmt.Fprintf(&b, "%s %s\n", ticket.ID, ticket.Title)
+		if !verbose {
+			continue
+		}
+		fmt.Fprintf(&b, "  assignee: %s | reporter: %s\n", emptyFallback(ticket.Assignee), emptyFallback(ticket.Reporter))
+		fmt.Fprintf(&b, "  state: %s\n", emptyFallback(ticket.State))
+		if ticket.PRLink != "" {
+			fmt.Fprintf(&b, "  pr: %s\n", ticket.PRLink)
+		}
+		if i < len(list)-1 {
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
+}
+
+func cacheKey(command, target string) string {
+	return command + "|" + strings.TrimSpace(target)
+}
+
+func lsCacheCommand(verbose bool) string {
+	if verbose {
+		return "ls-v"
+	}
+	return "ls"
+}
+
+func cachePath(ctx *Context, key string) (string, error) {
+	dir, err := config.CacheDir()
+	if err != nil {
+		return "", err
+	}
+	scope := cacheScope(ctx)
+	scopeSum := sha256.Sum256([]byte(scope))
+	sum := sha256.Sum256([]byte(key))
+	name := url.PathEscape(key)
+	return filepath.Join(dir, fmt.Sprintf("%x", scopeSum[:6]), fmt.Sprintf("%s-%x.txt", name, sum[:4])), nil
+}
+
+func readCommandCache(ctx *Context, key string) (string, bool, error) {
+	path, err := cachePath(ctx, key)
+	if err != nil {
+		return "", false, err
+	}
+	body, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return string(body), true, nil
+}
+
+func writeCommandCache(ctx *Context, key, output string) error {
+	path, err := cachePath(ctx, key)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(output), 0o600)
+}
+
+func printCacheNote(key string) {
+	fmt.Printf("⚠️ cache hit: %s\n", key)
+}
+
+func cacheScope(ctx *Context) string {
+	if ctx == nil || ctx.CLI == nil {
+		return ""
+	}
+	tokenHash := sha256.Sum256([]byte(ctx.CLI.Token))
+	return fmt.Sprintf("%s|%s|%d|%x", ctx.CLI.BaseURL, ctx.CLI.Cfg.Project, ctx.CLI.Cfg.BoardID, tokenHash[:6])
 }
 
 // isTicketID returns true when s looks like a Jira ticket key (e.g. PROJ-123 or proj-123).
