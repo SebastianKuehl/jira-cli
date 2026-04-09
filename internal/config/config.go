@@ -8,8 +8,10 @@ import (
 )
 
 const (
-	dirName  = ".jira"
-	fileName = "config"
+	dirName       = ".jira"
+	fileName      = "config"
+	configPathEnv = "JIRA_CONFIG_PATH"
+	configDirEnv  = "JIRA_CONFIG_DIR"
 )
 
 type Config struct {
@@ -21,6 +23,12 @@ type Config struct {
 }
 
 func Path() (string, error) {
+	if path := os.Getenv(configPathEnv); path != "" {
+		return filepath.Abs(path)
+	}
+	if dir := os.Getenv(configDirEnv); dir != "" {
+		return filepath.Join(dir, fileName), nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
