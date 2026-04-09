@@ -32,10 +32,14 @@ type Board struct {
 }
 
 type Sprint struct {
-	ID    int    `json:"id"`
-	Name  string `json:"name"`
-	State string `json:"state"`
-	Goal  string `json:"goal"`
+	ID           int       `json:"id"`
+	Name         string    `json:"name"`
+	State        string    `json:"state"`
+	Goal         string    `json:"goal"`
+	StartDate    time.Time `json:"startDate"`
+	EndDate      time.Time `json:"endDate"`
+	CompleteDate time.Time `json:"completeDate"`
+	CreatedDate  time.Time `json:"createdDate"`
 }
 
 type IssueTicket struct {
@@ -214,8 +218,6 @@ func (c *Client) ListSprints(ctx context.Context, boardID int) ([]Sprint, error)
 	}
 	return out, nil
 }
-
-
 
 type Transition struct {
 	ID   string `json:"id"`
@@ -408,8 +410,8 @@ func (c *Client) GetTicket(ctx context.Context, issueKey string) (IssueTicket, e
 			Priority    *struct {
 				Name string `json:"name"`
 			} `json:"priority"`
-			Labels   []string `json:"labels"`
-			Status   struct {
+			Labels []string `json:"labels"`
+			Status struct {
 				Name string `json:"name"`
 			} `json:"status"`
 			Assignee *struct {

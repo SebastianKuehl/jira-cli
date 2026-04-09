@@ -8,8 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/alecthomas/kong"
@@ -550,9 +552,26 @@ func selectedSprints(sprints []jira.Sprint, query string) ([]jira.Sprint, error)
 
 func latestSprints(sprints []jira.Sprint, limit int) []jira.Sprint {
 	if limit <= 0 || len(sprints) <= limit {
-		return sprints
+		out := append([]jira.Sprint(nil), sprints...)
+		sort.SliceStable(out, func(i, j int) bool {
+			return sprintSortDate(out[i]).After(sprintSortDate(out[j]))
+		})
+		return out
 	}
-	return sprints[:limit]
+	out := append([]jira.Sprint(nil), sprints...)
+	sort.SliceStable(out, func(i, j int) bool {
+		return sprintSortDate(out[i]).After(sprintSortDate(out[j]))
+	})
+	return out[:limit]
+}
+
+func sprintSortDate(sprint jira.Sprint) time.Time {
+	for _, value := range []time.Time{sprint.CompleteDate, sprint.EndDate, sprint.StartDate, sprint.CreatedDate} {
+		if !value.IsZero() {
+			return value
+		}
+	}
+	return time.Time{}
 }
 
 func findApproximateSprints(sprints []jira.Sprint, query string) []jira.Sprint {

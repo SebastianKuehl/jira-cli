@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sebastian/jira-cli/internal/config"
 	"github.com/sebastian/jira-cli/internal/jira"
@@ -236,7 +237,7 @@ func TestFetchCmdRunApproximatesSprintTarget(t *testing.T) {
 			_, _ = w.Write([]byte(`{"isLast":true,"values":[{"id":17,"name":"Backend Board"}]}`))
 		case r.URL.Path == "/rest/agile/1.0/board/17/sprint":
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"isLast":true,"values":[{"id":201,"name":"E51(S4).DevS201"},{"id":202,"name":"E51(S4).DevS202"}]}`))
+			_, _ = w.Write([]byte(`{"isLast":true,"values":[{"id":201,"name":"E51(S4).DevS201","startDate":"2026-04-01T00:00:00.000Z"},{"id":202,"name":"E51(S4).DevS202","startDate":"2026-03-01T00:00:00.000Z"}]}`))
 		case r.URL.Path == "/rest/agile/1.0/board/17/sprint/201/issue":
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"total":1,"issues":[{"key":"PROJ-201","fields":{"summary":"Approx sprint","status":{"name":"Todo"}}}]}`))
@@ -295,12 +296,16 @@ func TestSelectedSprintsRejectsAmbiguousApproximation(t *testing.T) {
 
 func TestSelectedSprintsPrefersLatestTenForApproximation(t *testing.T) {
 	sprints := []jira.Sprint{
-		{ID: 201, Name: "E51(S4).DevS201"},
+		{ID: 201, Name: "E51(S4).DevS201", StartDate: time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)},
 	}
 	for i := 0; i < 10; i++ {
-		sprints = append(sprints, jira.Sprint{ID: 300 + i, Name: fmt.Sprintf("Noise-%d", i)})
+		sprints = append(sprints, jira.Sprint{
+			ID:        300 + i,
+			Name:      fmt.Sprintf("Noise-%d", i),
+			StartDate: time.Date(2026, 4, 20-i, 0, 0, 0, 0, time.UTC),
+		})
 	}
-	sprints = append(sprints, jira.Sprint{ID: 1201, Name: "Legacy201"})
+	sprints = append(sprints, jira.Sprint{ID: 1201, Name: "Legacy201", StartDate: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)})
 
 	selected, err := selectedSprints(sprints, "201")
 	if err != nil {
@@ -314,9 +319,13 @@ func TestSelectedSprintsPrefersLatestTenForApproximation(t *testing.T) {
 func TestSelectedSprintsFallsBackToOlderApproximationWhenLatestTenMiss(t *testing.T) {
 	var sprints []jira.Sprint
 	for i := 0; i < 10; i++ {
-		sprints = append(sprints, jira.Sprint{ID: 400 + i, Name: fmt.Sprintf("Noise-%d", i)})
+		sprints = append(sprints, jira.Sprint{
+			ID:        400 + i,
+			Name:      fmt.Sprintf("Noise-%d", i),
+			StartDate: time.Date(2026, 4, 20-i, 0, 0, 0, 0, time.UTC),
+		})
 	}
-	sprints = append(sprints, jira.Sprint{ID: 999, Name: "Historic Sprint 201"})
+	sprints = append(sprints, jira.Sprint{ID: 999, Name: "Historic Sprint 201", StartDate: time.Date(2025, 12, 1, 0, 0, 0, 0, time.UTC)})
 
 	selected, err := selectedSprints(sprints, "201")
 	if err != nil {
@@ -324,6 +333,18 @@ func TestSelectedSprintsFallsBackToOlderApproximationWhenLatestTenMiss(t *testin
 	}
 	if len(selected) != 1 || selected[0].Name != "Historic Sprint 201" {
 		t.Fatalf("expected fallback to older sprint when latest ten miss, got %#v", selected)
+	}
+}
+
+func TestLatestSprintsUsesDatesNotListOrder(t *testing.T) {
+	sprints := []jira.Sprint{
+		{ID: 1, Name: "Older but first", StartDate: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},
+		{ID: 2, Name: "Newer but second", StartDate: time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)},
+	}
+
+	got := latestSprints(sprints, 1)
+	if len(got) != 1 || got[0].ID != 2 {
+		t.Fatalf("expected newest sprint by date, got %#v", got)
 	}
 }
 
