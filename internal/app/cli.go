@@ -27,7 +27,7 @@ type App struct {
 	cli CLI
 }
 
-var Version = "dev"
+var Version = "v0.1.1"
 
 func New() *App {
 	return &App{}
