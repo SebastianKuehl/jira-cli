@@ -202,6 +202,117 @@ func (c *Client) ListSprints(ctx context.Context, boardID int) ([]Sprint, error)
 	return out, nil
 }
 
+// GetTicket fetches a single Jira issue by key.
+func (c *Client) GetTicket(ctx context.Context, issueKey string) (IssueTicket, error) {
+	if c.BaseURL == "" || c.Token == "" {
+		return IssueTicket{}, errors.New("missing jira credentials")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		fmt.Sprintf("%s/rest/api/2/issue/%s", c.BaseURL, issueKey), nil)
+	if err != nil {
+		return IssueTicket{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	req.Header.Set("Accept", "application/json")
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return IssueTicket{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return IssueTicket{}, fmt.Errorf("jira get issue failed with status %s", resp.Status)
+	}
+	var parsed struct {
+		Key    string `json:"key"`
+		Fields struct {
+			Summary string `json:"summary"`
+			Status  struct {
+				Name string `json:"name"`
+			} `json:"status"`
+			Assignee *struct {
+				DisplayName string `json:"displayName"`
+			} `json:"assignee"`
+			Reporter *struct {
+				DisplayName string `json:"displayName"`
+			} `json:"reporter"`
+		} `json:"fields"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		return IssueTicket{}, err
+	}
+	ticket := IssueTicket{
+		ID:    parsed.Key,
+		Title: parsed.Fields.Summary,
+		State: parsed.Fields.Status.Name,
+	}
+	if parsed.Fields.Assignee != nil {
+		ticket.Assignee = parsed.Fields.Assignee.DisplayName
+	}
+	if parsed.Fields.Reporter != nil {
+		ticket.Reporter = parsed.Fields.Reporter.DisplayName
+	}
+	return ticket, nil
+}
+
+type Transition struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// GetTransitions returns the available workflow transitions for a Jira issue.
+func (c *Client) GetTransitions(ctx context.Context, issueKey string) ([]Transition, error) {
+	if c.BaseURL == "" || c.Token == "" {
+		return nil, errors.New("missing jira credentials")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		fmt.Sprintf("%s/rest/api/2/issue/%s/transitions", c.BaseURL, issueKey), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	req.Header.Set("Accept", "application/json")
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("jira transitions request failed with status %s", resp.Status)
+	}
+	var parsed struct {
+		Transitions []Transition `json:"transitions"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		return nil, err
+	}
+	return parsed.Transitions, nil
+}
+
+// DoTransition moves a Jira issue to the state identified by transitionID.
+func (c *Client) DoTransition(ctx context.Context, issueKey, transitionID string) error {
+	if c.BaseURL == "" || c.Token == "" {
+		return errors.New("missing jira credentials")
+	}
+	body := strings.NewReader(fmt.Sprintf(`{"transition":{"id":"%s"}}`, transitionID))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		fmt.Sprintf("%s/rest/api/2/issue/%s/transitions", c.BaseURL, issueKey), body)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Atlassian-Token", "no-check")
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("jira transition failed with status %s", resp.Status)
+	}
+	return nil
+}
+
 func (c *Client) ListSprintTickets(ctx context.Context, boardID, sprintID int) ([]IssueTicket, error) {
 	if c.BaseURL == "" || c.Token == "" {
 		return nil, errors.New("missing jira credentials")
