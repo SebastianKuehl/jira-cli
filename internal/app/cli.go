@@ -550,7 +550,7 @@ func (c *MoveCmd) Run(ctx *Context) error {
 
 type AssignCmd struct {
 	ID   string `arg:"" help:"Ticket ID."`
-	User string `arg:"" optional:"" help:"User; defaults to invoking user."`
+	User string `arg:"" optional:"" help:"User to assign; omit to pick from a list."`
 }
 
 func (c *AssignCmd) Run(ctx *Context) error {
@@ -561,10 +561,31 @@ func (c *AssignCmd) Run(ctx *Context) error {
 
 	var user jira.User
 	if c.User == "" {
-		user, err = client.GetCurrentUser(context.Background())
-		if err != nil {
-			return fmt.Errorf("could not resolve current user: %w", err)
+		if !stdinIsTerminal() {
+			return errors.New("no user specified; provide a user argument or run interactively to pick from a list")
 		}
+		users, err := client.ListAssignableUsers(context.Background(), c.ID)
+		if err != nil {
+			return fmt.Errorf("could not list assignable users: %w", err)
+		}
+		if len(users) == 0 {
+			return fmt.Errorf("no assignable users found for %s", c.ID)
+		}
+		fmt.Printf("Assignable users for %s:\n", c.ID)
+		for i, u := range users {
+			fmt.Printf("  %d) %s (%s)\n", i+1, u.DisplayName, u.EmailAddr)
+		}
+		reader := bufio.NewReader(os.Stdin)
+		fmt.Print("Select user number: ")
+		raw, err := reader.ReadString('\n')
+		if err != nil {
+			return err
+		}
+		selected, err := strconv.Atoi(strings.TrimSpace(raw))
+		if err != nil || selected < 1 || selected > len(users) {
+			return errors.New("invalid user selection")
+		}
+		user = users[selected-1]
 	} else {
 		users, err := client.SearchUsers(context.Background(), c.User)
 		if err != nil {

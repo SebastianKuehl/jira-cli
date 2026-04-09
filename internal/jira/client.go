@@ -309,6 +309,50 @@ func (c *Client) GetCurrentUser(ctx context.Context) (User, error) {
 	return u, nil
 }
 
+func (c *Client) ListAssignableUsers(ctx context.Context, issueKey string) ([]User, error) {
+	const pageSize = 50
+	out := make([]User, 0)
+	startAt := 0
+	for {
+		u, err := url.Parse(c.BaseURL + "/rest/api/2/user/assignable/search")
+		if err != nil {
+			return nil, err
+		}
+		q := u.Query()
+		q.Set("issueKey", issueKey)
+		q.Set("startAt", strconv.Itoa(startAt))
+		q.Set("maxResults", strconv.Itoa(pageSize))
+		u.RawQuery = q.Encode()
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+		req.Header.Set("Accept", "application/json")
+		resp, err := c.HTTPClient.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode >= 300 {
+			resp.Body.Close()
+			return nil, fmt.Errorf("list assignable users failed with status %s", resp.Status)
+		}
+		var page []User
+		if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
+			resp.Body.Close()
+			return nil, err
+		}
+		resp.Body.Close()
+		out = append(out, page...)
+		if len(page) < pageSize {
+			break
+		}
+		startAt += len(page)
+	}
+	return out, nil
+}
+
 func (c *Client) SearchUsers(ctx context.Context, query string) ([]User, error) {
 	u, err := url.Parse(c.BaseURL + "/rest/api/2/user/search")
 	if err != nil {
