@@ -106,6 +106,23 @@ func TestRmCmdRunRemovesSprintWithoutSubcommand(t *testing.T) {
 	}
 }
 
+func TestRmCmdRunRemovesSprintByFragment(t *testing.T) {
+	root := t.TempDir()
+	sprintPath := filepath.Join(root, "Sprint Alpha")
+	if err := os.MkdirAll(sprintPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := &Context{CLI: &CLI{Cfg: config.Config{BasePath: root}}}
+	cmd := &RmCmd{Target: "alph"}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(sprintPath); !os.IsNotExist(err) {
+		t.Fatalf("expected sprint removed by fragment, stat err=%v", err)
+	}
+}
+
 func TestRmCmdRunRemovesTicketWithoutSubcommand(t *testing.T) {
 	root := t.TempDir()
 	sprintPath := filepath.Join(root, "Sprint-1")
@@ -124,6 +141,44 @@ func TestRmCmdRunRemovesTicketWithoutSubcommand(t *testing.T) {
 	}
 	if _, err := os.Stat(ticketPath); !os.IsNotExist(err) {
 		t.Fatalf("expected ticket removed, stat err=%v", err)
+	}
+}
+
+func TestRmCmdRunTicketIgnoresAmbiguousSprintFragments(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"VW-2 cleanup", "VW-2 docs"} {
+		if err := os.MkdirAll(filepath.Join(root, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sprintPath := filepath.Join(root, "Sprint-1")
+	if err := os.MkdirAll(sprintPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ticketPath := filepath.Join(sprintPath, "VW-2.md")
+	if err := os.WriteFile(ticketPath, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := &Context{CLI: &CLI{Cfg: config.Config{BasePath: root}}}
+	cmd := &RmCmd{Target: "VW-2"}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(ticketPath); !os.IsNotExist(err) {
+		t.Fatalf("expected ticket removed, stat err=%v", err)
+	}
+}
+
+func TestRmCmdRunConfigIgnoresSprintFragments(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "my-config-sprint"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := &RmCmd{Target: "config"}
+	if err := cmd.Run(&Context{CLI: &CLI{Cfg: config.Config{BasePath: root}}}); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -168,6 +223,62 @@ func TestResolveRemovalTargetErrorsWhenNonInteractive(t *testing.T) {
 	}
 }
 
+func TestResolveSprintRemovalSelectionReturnsSingleFragmentMatch(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "Sprint Alpha"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got, names, err := resolveSprintRemovalSelection(root, "alph", bufio.NewReader(strings.NewReader("")), &bytes.Buffer{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Base(got) != "Sprint Alpha" {
+		t.Fatalf("expected Sprint Alpha, got %q", got)
+	}
+	if len(names) != 1 || names[0] != "Sprint Alpha" {
+		t.Fatalf("expected names to include Sprint Alpha, got %#v", names)
+	}
+}
+
+func TestResolveSprintRemovalSelectionErrorsWhenFragmentIsAmbiguousNonInteractive(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"Sprint Alpha", "Sprint Alpine"} {
+		if err := os.MkdirAll(filepath.Join(root, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, _, err := resolveSprintRemovalSelection(root, "alp", bufio.NewReader(strings.NewReader("")), &bytes.Buffer{}, false)
+	if err == nil {
+		t.Fatalf("expected ambiguity error, got %q", got)
+	}
+	if !strings.Contains(err.Error(), "Sprint Alpha, Sprint Alpine") {
+		t.Fatalf("expected ambiguity details, got %v", err)
+	}
+}
+
+func TestResolveSprintRemovalSelectionPromptsForAmbiguousFragment(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"Sprint Alpha", "Sprint Alpine"} {
+		if err := os.MkdirAll(filepath.Join(root, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var out bytes.Buffer
+	got, _, err := resolveSprintRemovalSelection(root, "alp", bufio.NewReader(strings.NewReader("alpin\n1\n")), &out, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Base(got) != "Sprint Alpine" {
+		t.Fatalf("expected Sprint Alpine, got %q", got)
+	}
+	if !strings.Contains(out.String(), `Sprint "alp" matches multiple folders:`) {
+		t.Fatalf("expected selection prompt, got %q", out.String())
+	}
+}
+
 func TestRmCommandParsesExplicitTicketFlag(t *testing.T) {
 	parser, err := kong.New(&CLI{})
 	if err != nil {
@@ -183,5 +294,13 @@ func TestRmCmdRejectsConfigFlagWithExtraTarget(t *testing.T) {
 	err := cmd.Run(&Context{CLI: &CLI{}})
 	if err == nil {
 		t.Fatal("expected conflicting config target to fail")
+	}
+}
+
+func TestRmCmdRejectsDotSprintTarget(t *testing.T) {
+	cmd := &RmCmd{Target: "."}
+	err := cmd.Run(&Context{CLI: &CLI{Cfg: config.Config{BasePath: t.TempDir()}}})
+	if err == nil {
+		t.Fatal("expected dot sprint target to fail")
 	}
 }

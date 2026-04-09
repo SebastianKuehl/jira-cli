@@ -294,44 +294,71 @@ func (c *RmCmd) Run(ctx *Context) error {
 	if target == "" {
 		return errors.New("provide a sprint name or ticket ID")
 	}
+	if (target == "." || target == "..") && !c.Config && !c.Ticket {
+		return fmt.Errorf("invalid sprint %q", target)
+	}
 	basePath, err := ctx.ProjectPath()
 	if err != nil {
 		return err
 	}
-	exists := sprintExists(basePath, target)
 	isTicket := isTicketID(target)
 	if c.Sprint {
-		return (&RmSprintCmd{Sprint: target}).Run(ctx)
+		sprintPath, _, err := resolveSprintRemovalSelection(basePath, target, bufio.NewReader(os.Stdin), os.Stdout, stdinIsTerminal())
+		if err != nil {
+			return err
+		}
+		if sprintPath == "" {
+			return fmt.Errorf("sprint %q not found", target)
+		}
+		return removeSprintPath(basePath, target, sprintPath)
 	}
 	if c.Ticket {
 		return (&RmTicketCmd{ID: target}).Run(ctx)
 	}
 	if strings.EqualFold(target, "config") {
-		if exists {
+		if sprintExists(basePath, target) {
 			kind, err := resolveRemovalTarget(target, []string{"config", "sprint"}, bufio.NewReader(os.Stdin), os.Stdout, stdinIsTerminal())
 			if err != nil {
 				return err
 			}
 			if kind == "sprint" {
-				return (&RmSprintCmd{Sprint: target}).Run(ctx)
+				sprintPath, _, err := resolveSprintRemovalSelection(basePath, target, bufio.NewReader(os.Stdin), os.Stdout, stdinIsTerminal())
+				if err != nil {
+					return err
+				}
+				if sprintPath == "" {
+					return fmt.Errorf("sprint %q not found", target)
+				}
+				return removeSprintPath(basePath, target, sprintPath)
 			}
 		}
 		return (&RmConfigCmd{}).Run(ctx)
 	}
-	if exists && isTicket {
-		kind, err := resolveRemovalTarget(target, []string{"sprint", "ticket"}, bufio.NewReader(os.Stdin), os.Stdout, stdinIsTerminal())
+	if isTicket {
+		sprintPath, _, err := resolveExactSprintRemovalSelection(basePath, target)
 		if err != nil {
 			return err
 		}
-		if kind == "ticket" {
-			return (&RmTicketCmd{ID: target}).Run(ctx)
+		if sprintPath != "" {
+			kind, err := resolveRemovalTarget(target, []string{"sprint", "ticket"}, bufio.NewReader(os.Stdin), os.Stdout, stdinIsTerminal())
+			if err != nil {
+				return err
+			}
+			if kind == "ticket" {
+				return (&RmTicketCmd{ID: target}).Run(ctx)
+			}
+			return removeSprintPath(basePath, target, sprintPath)
 		}
-		return (&RmSprintCmd{Sprint: target}).Run(ctx)
-	}
-	if isTicket {
 		return (&RmTicketCmd{ID: target}).Run(ctx)
 	}
-	return (&RmSprintCmd{Sprint: target}).Run(ctx)
+	sprintPath, _, err := resolveSprintRemovalSelection(basePath, target, bufio.NewReader(os.Stdin), os.Stdout, stdinIsTerminal())
+	if err != nil {
+		return err
+	}
+	if sprintPath == "" {
+		return fmt.Errorf("sprint %q not found", target)
+	}
+	return removeSprintPath(basePath, target, sprintPath)
 }
 
 type RmConfigCmd struct{}
@@ -353,6 +380,17 @@ func (c *RmSprintCmd) Run(ctx *Context) error {
 	if err != nil {
 		return err
 	}
+	sprintPath, _, err := resolveSprintRemovalSelection(basePath, c.Sprint, bufio.NewReader(os.Stdin), os.Stdout, stdinIsTerminal())
+	if err != nil {
+		return err
+	}
+	if sprintPath == "" {
+		return fmt.Errorf("sprint %q not found", c.Sprint)
+	}
+	return removeSprintPath(basePath, c.Sprint, sprintPath)
+}
+
+func removeSprintPath(basePath, target, sprintPath string) error {
 	baseAbs, err := filepath.Abs(basePath)
 	if err != nil {
 		return err
@@ -361,8 +399,7 @@ func (c *RmSprintCmd) Run(ctx *Context) error {
 	if err != nil {
 		return err
 	}
-	target := filepath.Join(baseAbs, sprintFolderName(jira.Sprint{Name: c.Sprint}))
-	absTarget, err := filepath.Abs(target)
+	absTarget, err := filepath.Abs(sprintPath)
 	if err != nil {
 		return err
 	}
@@ -375,14 +412,14 @@ func (c *RmSprintCmd) Run(ctx *Context) error {
 		return err
 	}
 	if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return fmt.Errorf("invalid sprint path %q", c.Sprint)
+		return fmt.Errorf("invalid sprint path %q", target)
 	}
 	info, err := os.Stat(targetResolved)
 	if err != nil {
 		return err
 	}
 	if !info.IsDir() {
-		return fmt.Errorf("sprint %q is not a directory", c.Sprint)
+		return fmt.Errorf("sprint %q is not a directory", target)
 	}
 	return os.RemoveAll(targetResolved)
 }
@@ -439,9 +476,11 @@ func (c *RmTicketCmd) Run(ctx *Context) error {
 }
 
 func sprintExists(basePath, sprint string) bool {
-	path := filepath.Join(basePath, sprintFolderName(jira.Sprint{Name: sprint}))
-	info, err := os.Stat(path)
-	return err == nil && info.IsDir()
+	path, _, err := resolveExactSprintRemovalSelection(basePath, sprint)
+	if err != nil {
+		return false
+	}
+	return path != ""
 }
 
 func resolveRemovalTarget(target string, options []string, reader *bufio.Reader, out io.Writer, interactive bool) (string, error) {
@@ -467,6 +506,167 @@ func resolveRemovalTarget(target string, options []string, reader *bufio.Reader,
 		return "", errors.New("invalid removal selection")
 	}
 	return options[selected-1], nil
+}
+
+func resolveSprintRemovalSelection(basePath, target string, reader *bufio.Reader, out io.Writer, interactive bool) (string, []string, error) {
+	matches, err := findSprintRemovalMatches(basePath, target)
+	if err != nil {
+		return "", nil, err
+	}
+	if len(matches) == 0 {
+		return "", nil, nil
+	}
+	if len(matches) == 1 {
+		return matches[0].Path, []string{matches[0].Name}, nil
+	}
+	if !interactive {
+		names := sprintRemovalMatchNames(matches)
+		return "", names, fmt.Errorf("sprint %q is ambiguous; matches: %s", strings.TrimSpace(target), strings.Join(names, ", "))
+	}
+	selected, err := pickSprintRemovalMatch(matches, reader, out, target)
+	if err != nil {
+		return "", nil, err
+	}
+	return selected.Path, sprintRemovalMatchNames(matches), nil
+}
+
+func resolveExactSprintRemovalSelection(basePath, target string) (string, []string, error) {
+	matches, err := findExactSprintRemovalMatches(basePath, target)
+	if err != nil {
+		return "", nil, err
+	}
+	if len(matches) == 0 {
+		return "", nil, nil
+	}
+	return matches[0].Path, sprintRemovalMatchNames(matches), nil
+}
+
+type sprintRemovalMatch struct {
+	Name string
+	Path string
+}
+
+func findSprintRemovalMatches(basePath, target string) ([]sprintRemovalMatch, error) {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return nil, nil
+	}
+	entries, err := os.ReadDir(basePath)
+	if err != nil {
+		return nil, err
+	}
+	exact := make([]sprintRemovalMatch, 0, 1)
+	approximate := make([]sprintRemovalMatch, 0)
+	lowerTarget := strings.ToLower(target)
+	normalizedTarget := normalizeSprintLookup(target)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		path := filepath.Join(basePath, name)
+		match := sprintRemovalMatch{Name: name, Path: path}
+		if strings.EqualFold(name, target) {
+			exact = append(exact, match)
+			continue
+		}
+		if strings.Contains(strings.ToLower(name), lowerTarget) || (normalizedTarget != "" && strings.Contains(normalizeSprintLookup(name), normalizedTarget)) {
+			approximate = append(approximate, match)
+		}
+	}
+	if len(exact) > 0 {
+		return exact, nil
+	}
+	sort.SliceStable(approximate, func(i, j int) bool {
+		return strings.ToLower(approximate[i].Name) < strings.ToLower(approximate[j].Name)
+	})
+	return approximate, nil
+}
+
+func findExactSprintRemovalMatches(basePath, target string) ([]sprintRemovalMatch, error) {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return nil, nil
+	}
+	entries, err := os.ReadDir(basePath)
+	if err != nil {
+		return nil, err
+	}
+	exact := make([]sprintRemovalMatch, 0, 1)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if !strings.EqualFold(entry.Name(), target) {
+			continue
+		}
+		exact = append(exact, sprintRemovalMatch{
+			Name: entry.Name(),
+			Path: filepath.Join(basePath, entry.Name()),
+		})
+	}
+	return exact, nil
+}
+
+func sprintRemovalMatchNames(matches []sprintRemovalMatch) []string {
+	names := make([]string, 0, len(matches))
+	for _, match := range matches {
+		names = append(names, match.Name)
+	}
+	return names
+}
+
+func pickSprintRemovalMatch(matches []sprintRemovalMatch, reader *bufio.Reader, out io.Writer, target string) (sprintRemovalMatch, error) {
+	filtered := matches
+	query := ""
+	for {
+		if query != "" {
+			filtered = filterSprintRemovalMatches(matches, query)
+			if len(filtered) == 0 {
+				fmt.Fprintf(out, "  (no sprint matches for %q)\n", query)
+				query = ""
+				filtered = matches
+				continue
+			}
+		}
+		fmt.Fprintf(out, "Sprint %q matches multiple folders:\n", strings.TrimSpace(target))
+		for i, match := range filtered {
+			fmt.Fprintf(out, "  %d) %s\n", i+1, match.Name)
+		}
+		fmt.Fprint(out, "Enter number to select, or type a search term to filter (empty to cancel): ")
+		raw, err := reader.ReadString('\n')
+		if err != nil {
+			return sprintRemovalMatch{}, err
+		}
+		input := strings.TrimSpace(raw)
+		if input == "" {
+			return sprintRemovalMatch{}, errors.New("removal cancelled")
+		}
+		if n, err := strconv.Atoi(input); err == nil {
+			if n < 1 || n > len(filtered) {
+				fmt.Fprintf(out, "  (invalid number, valid range is 1-%d)\n", len(filtered))
+				continue
+			}
+			return filtered[n-1], nil
+		}
+		query = input
+	}
+}
+
+func filterSprintRemovalMatches(matches []sprintRemovalMatch, query string) []sprintRemovalMatch {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return matches
+	}
+	lowerQuery := strings.ToLower(query)
+	normalizedQuery := normalizeSprintLookup(query)
+	filtered := make([]sprintRemovalMatch, 0, len(matches))
+	for _, match := range matches {
+		if strings.Contains(strings.ToLower(match.Name), lowerQuery) || (normalizedQuery != "" && strings.Contains(normalizeSprintLookup(match.Name), normalizedQuery)) {
+			filtered = append(filtered, match)
+		}
+	}
+	return filtered
 }
 
 var ticketIDPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]+-[0-9]+$`)
