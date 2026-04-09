@@ -7,11 +7,11 @@ Minimal Jira CLI for syncing Jira tickets into local Markdown files, grouped by 
 - Authenticate with Jira using command-line flags, environment variables, or a local `.env`
 - Configure a default Jira project, board, and local base path
 - Fetch all tickets, a single sprint, or a single ticket into Markdown
-- List available sprints or the tickets inside a sprint
+- List available sprints or the tickets inside a sprint, with the sprint header shown before ticket output
 - Print a sprint goal or full ticket details to the terminal
 - Move tickets through workflow transitions
-- Assign and unassign tickets
-- Remove local config, sprint folders, or ticket files
+- Assign and unassign tickets with interactive user selection when needed
+- Remove local config, sprint folders, or ticket files, including fragment-based sprint selection
 
 ## Prerequisites
 
@@ -82,6 +82,7 @@ If a config already exists, the CLI prints the current values and asks whether t
 Show help:
 
 ```sh
+jira
 jira --help
 ```
 
@@ -129,14 +130,18 @@ List sprints or tickets:
 ```sh
 jira ls
 jira ls "Sprint 42"
+jira ls 201
 jira ls "Sprint 42" --verbose
 ```
 
-`jira ls [sprint]` accepts:
+`jira ls <sprint>` accepts:
 
 - the full sprint name
 - the Jira sprint ID
 - a numeric fragment embedded in the sprint name, such as `201` for `E51(S4).DevS201`
+- if a numeric fragment matches multiple sprints, the CLI presents the matches and lets you pick one interactively
+
+When listing tickets for a sprint, the output starts with the sprint name and ID before the ticket rows.
 
 Print a sprint goal or ticket details:
 
@@ -164,10 +169,13 @@ Remove local config, a sprint folder, or a ticket file:
 ```sh
 jira rm config
 jira rm "Sprint 42"
+jira rm 201
 jira rm PROJ-123
 jira rm --sprint "Sprint 42"
 jira rm --ticket PROJ-123
 ```
+
+`jira rm <target>` accepts exact sprint names, ticket IDs, and sprint-name fragments. If a fragment is ambiguous, the CLI shows matching sprint folders and prompts you to choose one.
 
 ## Markdown output
 
@@ -195,6 +203,8 @@ Run the full test suite:
 ```sh
 go test ./...
 ```
+
+App and config tests use isolated temporary config paths so they do not overwrite your real `~/.jira/config`.
 
 ## License
 
