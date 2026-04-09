@@ -44,6 +44,30 @@ func Load() (Config, error) {
 	return cfg, nil
 }
 
+func Exists() (bool, error) {
+	path, err := Path()
+	if err != nil {
+		return false, err
+	}
+	_, err = os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func Remove() error {
+	path, err := Path()
+	if err != nil {
+		return err
+	}
+	err = os.Remove(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
 func Save(cfg Config) error {
 	path, err := Path()
 	if err != nil {

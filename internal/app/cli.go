@@ -49,16 +49,17 @@ type CLI struct {
 	BaseURL string `help:"Jira base URL." env:"JIRA_BASE_URL"`
 	Token   string `help:"Jira token." env:"JIRA_TOKEN"`
 
-	Test      TestCmd      `cmd:"" help:"Checks if Jira credentials can reach Jira."`
-	Configure ConfigureCmd `cmd:"" help:"Configure default project and base path."`
-	Fetch     FetchCmd     `cmd:"" help:"Fetch tickets and group by sprint."`
+	Test   TestCmd   `cmd:"" help:"Checks if Jira credentials can reach Jira."`
+	Config ConfigCmd `cmd:"config" help:"Configure default project and base path."`
+	Rm     RmCmd     `cmd:"rm" help:"Remove config, sprint folder, or ticket file."`
+	Fetch  FetchCmd  `cmd:"" help:"Fetch tickets and group by sprint."`
 	Ls        LsCmd        `cmd:"" help:"List sprints or tickets in a sprint."`
 	Cat       CatCmd       `cmd:"" help:"Print sprint goal or ticket content."`
 	Move      MoveCmd      `cmd:"" help:"Move ticket to next workflow state."`
 	Assign    AssignCmd    `cmd:"" help:"Assign ticket to user."`
 	Unassign  UnassignCmd  `cmd:"" help:"Unassign ticket."`
 
-	Config config.Config `kong:"-"`
+	Cfg config.Config `kong:"-"`
 }
 
 func (c *CLI) bootstrap() error {
@@ -66,7 +67,7 @@ func (c *CLI) bootstrap() error {
 	if err != nil {
 		return err
 	}
-	c.Config = cfg
+	c.Cfg = cfg
 
 	dotenvPath := ".env"
 	if _, err := os.Stat(dotenvPath); err == nil {
@@ -96,10 +97,10 @@ func (c *Context) JiraClient() (*jira.Client, error) {
 }
 
 func (c *Context) ProjectPath() (string, error) {
-	if c.CLI.Config.BasePath == "" {
+	if c.CLI.Cfg.BasePath == "" {
 		return os.Getwd()
 	}
-	return filepath.Abs(c.CLI.Config.BasePath)
+	return filepath.Abs(c.CLI.Cfg.BasePath)
 }
 
 type TestCmd struct{}
@@ -116,12 +117,56 @@ func (t *TestCmd) Run(ctx *Context) error {
 	return nil
 }
 
-type ConfigureCmd struct {
-	Project  string `help:"Default Jira project key."`
-	BasePath string `help:"Optional base path to write markdown files."`
+type ConfigCmd struct {
+	Info bool `name:"info" help:"Print config file path and contents."`
 }
 
-func (c *ConfigureCmd) Run(ctx *Context) error {
+func (c *ConfigCmd) Run(ctx *Context) error {
+	if c.Info {
+		path, err := config.Path()
+		if err != nil {
+			return err
+		}
+		fmt.Println("Config file:", path)
+		exists, err := config.Exists()
+		if err != nil {
+			return err
+		}
+		if !exists {
+			fmt.Println("No config file found.")
+			return nil
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(b))
+		return nil
+	}
+
+	exists, err := config.Exists()
+	if err != nil {
+		return err
+	}
+
+	reader := bufio.NewReader(os.Stdin)
+	isInteractive := stdinIsTerminal()
+
+	if exists {
+		if !isInteractive {
+			return errors.New("config already exists; re-run interactively to replace it")
+		}
+		fmt.Print("A config already exists. Create a new one? [y/N]: ")
+		answer, err := reader.ReadString('\n')
+		if err != nil {
+			return err
+		}
+		if strings.ToLower(strings.TrimSpace(answer)) != "y" {
+			fmt.Println("Aborted.")
+			return nil
+		}
+	}
+
 	client, err := ctx.JiraClient()
 	if err != nil {
 		return err
@@ -134,61 +179,79 @@ func (c *ConfigureCmd) Run(ctx *Context) error {
 		return errors.New("no Jira projects available for current credentials")
 	}
 
-	reader := bufio.NewReader(os.Stdin)
-	isInteractive := stdinIsTerminal()
-	if c.Project == "" {
-		if !isInteractive {
-			return errors.New("project must be provided with --project when stdin is not interactive")
-		}
-		fmt.Println("Select a default Jira project:")
-		for i, p := range projects {
-			fmt.Printf("  %d) %s - %s\n", i+1, p.Key, p.Name)
-		}
-		fmt.Print("Project number: ")
-		raw, err := reader.ReadString('\n')
-		if err != nil {
-			return err
-		}
-		selected, err := strconv.Atoi(strings.TrimSpace(raw))
-		if err != nil || selected < 1 || selected > len(projects) {
-			return errors.New("invalid project selection")
-		}
-		c.Project = projects[selected-1].Key
+	if !isInteractive {
+		return errors.New("project must be selected interactively; stdin is not a terminal")
 	}
 
-	cfg := ctx.CLI.Config
-	if c.Project != "" {
-		cfg.Project = c.Project
+	fmt.Println("Select a default Jira project:")
+	for i, p := range projects {
+		fmt.Printf("  %d) %s - %s\n", i+1, p.Key, p.Name)
+	}
+	fmt.Print("Project number: ")
+	raw, err := reader.ReadString('\n')
+	if err != nil {
+		return err
+	}
+	selected, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || selected < 1 || selected > len(projects) {
+		return errors.New("invalid project selection")
 	}
 
-	basePathProvidedByFlag := c.BasePath != ""
-	clearBasePath := false
-	if !basePathProvidedByFlag && isInteractive {
-		fmt.Print("Project base path (leave empty for current directory): ")
-		rawBasePath, err := reader.ReadString('\n')
-		if err != nil {
-			return err
-		}
-		c.BasePath = strings.TrimSpace(rawBasePath)
-		if c.BasePath == "" {
-			clearBasePath = true
-		}
+	cfg := config.Config{
+		Project: projects[selected-1].Key,
 	}
 
-	if c.BasePath != "" {
-		p, err := filepath.Abs(c.BasePath)
+	fmt.Print("Project base path (leave empty for current directory): ")
+	rawBasePath, err := reader.ReadString('\n')
+	if err != nil {
+		return err
+	}
+	basePath := strings.TrimSpace(rawBasePath)
+	if basePath != "" {
+		p, err := filepath.Abs(basePath)
 		if err != nil {
 			return err
 		}
 		cfg.BasePath = p
-	} else if clearBasePath {
-		cfg.BasePath = ""
 	}
+
 	if err := config.Save(cfg); err != nil {
 		return err
 	}
 	fmt.Println("configuration saved")
 	return nil
+}
+
+// RmCmd groups removal subcommands.
+type RmCmd struct {
+	Config RmConfigCmd `cmd:"config" help:"Remove the config file."`
+	Sprint RmSprintCmd `cmd:"sprint" help:"Remove a local sprint folder and its tickets."`
+	Ticket RmTicketCmd `cmd:"ticket" help:"Remove a local markdown file for a ticket."`
+}
+
+type RmConfigCmd struct{}
+
+func (c *RmConfigCmd) Run(ctx *Context) error {
+	_ = ctx
+	return jira.ErrNotImplemented
+}
+
+type RmSprintCmd struct {
+	Sprint string `arg:"" help:"Sprint name."`
+}
+
+func (c *RmSprintCmd) Run(ctx *Context) error {
+	_ = ctx
+	return jira.ErrNotImplemented
+}
+
+type RmTicketCmd struct {
+	ID string `arg:"" help:"Ticket ID."`
+}
+
+func (c *RmTicketCmd) Run(ctx *Context) error {
+	_ = ctx
+	return jira.ErrNotImplemented
 }
 
 func stdinIsTerminal() bool {
