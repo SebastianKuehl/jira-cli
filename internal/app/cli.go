@@ -438,8 +438,44 @@ type MoveCmd struct {
 }
 
 func (c *MoveCmd) Run(ctx *Context) error {
-	_ = ctx
-	return jira.ErrNotImplemented
+	client, err := ctx.JiraClient()
+	if err != nil {
+		return err
+	}
+	transitions, err := client.GetTransitions(context.Background(), c.ID)
+	if err != nil {
+		return err
+	}
+	if len(transitions) == 0 {
+		return fmt.Errorf("no transitions available for ticket %s", c.ID)
+	}
+
+	fmt.Printf("Available transitions for %s:\n", c.ID)
+	for i, t := range transitions {
+		fmt.Printf("  %d) %s\n", i+1, t.Name)
+	}
+
+	if !stdinIsTerminal() {
+		return errors.New("transition must be selected interactively; stdin is not a terminal")
+	}
+
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Print("Select transition: ")
+	raw, err := reader.ReadString('\n')
+	if err != nil {
+		return err
+	}
+	selected, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || selected < 1 || selected > len(transitions) {
+		return errors.New("invalid transition selection")
+	}
+
+	chosen := transitions[selected-1]
+	if err := client.DoTransition(context.Background(), c.ID, chosen.ID); err != nil {
+		return err
+	}
+	fmt.Printf("%s moved to %q\n", c.ID, chosen.Name)
+	return nil
 }
 
 type AssignCmd struct {
