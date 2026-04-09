@@ -53,6 +53,7 @@ jira unassign [id] # unassigns the ticket
 
 Specifics for the command `jira ls [sprint]`:
 - prints the list of jira tickets in the format: <id> <title>
+- accepts the full sprint name, the Jira sprint ID, or a numeric fragment embedded in the sprint name (for example `201` -> `E51(S4).DevS201`)
 - with flag --verbose or -v:
     - prints a line with <id><title> 
     - prints: <assignee> and <reporter>

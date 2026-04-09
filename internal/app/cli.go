@@ -370,9 +370,49 @@ func (c *RmTicketCmd) Run(ctx *Context) error {
 }
 
 var ticketIDPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]+-[0-9]+$`)
+var sprintNumberPattern = regexp.MustCompile(`\d+`)
 
 func isTicketID(id string) bool {
 	return ticketIDPattern.MatchString(strings.TrimSpace(id))
+}
+
+func findSprint(sprints []jira.Sprint, input string) (*jira.Sprint, error) {
+	trimmed := strings.TrimSpace(input)
+	if trimmed == "" {
+		return nil, nil
+	}
+	for i := range sprints {
+		if strings.EqualFold(sprints[i].Name, trimmed) || strconv.Itoa(sprints[i].ID) == trimmed {
+			return &sprints[i], nil
+		}
+	}
+	if !isDigits(trimmed) {
+		return nil, nil
+	}
+	matches := make([]string, 0, 1)
+	var selected *jira.Sprint
+	for i := range sprints {
+		for _, part := range sprintNumberPattern.FindAllString(sprints[i].Name, -1) {
+			if part == trimmed {
+				matches = append(matches, sprints[i].Name)
+				selected = &sprints[i]
+				break
+			}
+		}
+	}
+	if len(matches) > 1 {
+		return nil, fmt.Errorf("sprint %q is ambiguous; matches: %s", trimmed, strings.Join(matches, ", "))
+	}
+	return selected, nil
+}
+
+func isDigits(value string) bool {
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return value != ""
 }
 
 func expandPath(p string) (string, error) {
@@ -439,12 +479,9 @@ func (c *LsCmd) Run(ctx *Context) error {
 		}
 		return nil
 	}
-	var selected *jira.Sprint
-	for i := range sprints {
-		if strings.EqualFold(sprints[i].Name, c.Sprint) || strconv.Itoa(sprints[i].ID) == c.Sprint {
-			selected = &sprints[i]
-			break
-		}
+	selected, err := findSprint(sprints, c.Sprint)
+	if err != nil {
+		return err
 	}
 	if selected == nil {
 		return fmt.Errorf("sprint %q not found", c.Sprint)
@@ -648,15 +685,17 @@ func (c *CatCmd) Run(ctx *Context) error {
 	if err != nil {
 		return err
 	}
-	for _, sprint := range sprints {
-		if strings.EqualFold(sprint.Name, c.Target) || strconv.Itoa(sprint.ID) == c.Target {
-			if strings.TrimSpace(sprint.Goal) == "" {
-				fmt.Println("(no goal set for this sprint)")
-			} else {
-				fmt.Println(sprint.Goal)
-			}
-			return nil
+	sprint, err := findSprint(sprints, c.Target)
+	if err != nil {
+		return err
+	}
+	if sprint != nil {
+		if strings.TrimSpace(sprint.Goal) == "" {
+			fmt.Println("(no goal set for this sprint)")
+		} else {
+			fmt.Println(sprint.Goal)
 		}
+		return nil
 	}
 	return fmt.Errorf("sprint %q not found", c.Target)
 }
