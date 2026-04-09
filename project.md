@@ -2,6 +2,7 @@
 
 This CLI fetches Jira tickets to markdown files.
 Markdown tickets are grouped in folders (sprints).
+REST API v2 is used.
 
 ## Tech stack
 - Go
