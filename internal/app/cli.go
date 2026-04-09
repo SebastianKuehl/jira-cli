@@ -907,7 +907,7 @@ func (c *FetchCmd) Run(ctx *Context) error {
 	if err != nil {
 		return err
 	}
-	sprints, err := client.ListSprints(context.Background(), boardID)
+	boardID, sprints, err := resolveBoardSprints(ctx, client, projectKey, boardID)
 	if err != nil {
 		return err
 	}
@@ -1301,7 +1301,7 @@ func (c *LsCmd) Run(ctx *Context) error {
 	if err != nil {
 		return err
 	}
-	sprints, err := client.ListSprints(context.Background(), boardID)
+	boardID, sprints, err := resolveBoardSprints(ctx, client, projectKey, boardID)
 	if err != nil {
 		return err
 	}
@@ -1365,61 +1365,23 @@ func ensureProject(ctx *Context, client *jira.Client) (string, error) {
 }
 
 func ensureBoard(ctx *Context, client *jira.Client, projectKey string) (int, error) {
-	boards, err := client.ListBoards(context.Background(), projectKey)
-	if err != nil {
-		return 0, err
-	}
-	isValidBoard := func(id int) bool {
-		for _, board := range boards {
-			if board.ID == id {
-				return true
-			}
-		}
-		return false
-	}
 	if ctx.CLI.Cfg.BoardByProject != nil && ctx.CLI.Cfg.BoardByProject[projectKey] > 0 {
-		id := ctx.CLI.Cfg.BoardByProject[projectKey]
-		if isValidBoard(id) {
-			if ctx.CLI.Cfg.BoardNameByProject == nil || strings.TrimSpace(ctx.CLI.Cfg.BoardNameByProject[projectKey]) == "" {
-				cfg := ctx.CLI.Cfg
-				if cfg.BoardNameByProject == nil {
-					cfg.BoardNameByProject = map[string]string{}
-				}
-				cfg.BoardNameByProject[projectKey] = boardNameByID(boards, id)
-				if err := config.Save(cfg); err != nil {
-					return 0, err
-				}
-				ctx.CLI.Cfg = cfg
-			}
-			return id, nil
-		}
-		cfg := ctx.CLI.Cfg
-		delete(cfg.BoardByProject, projectKey)
-		if cfg.BoardNameByProject != nil {
-			delete(cfg.BoardNameByProject, projectKey)
-		}
-		if err := config.Save(cfg); err != nil {
-			return 0, err
-		}
-		ctx.CLI.Cfg = cfg
+		return ctx.CLI.Cfg.BoardByProject[projectKey], nil
 	}
-	if ctx.CLI.Cfg.BoardID > 0 && isValidBoard(ctx.CLI.Cfg.BoardID) {
+	if ctx.CLI.Cfg.BoardID > 0 {
 		cfg := ctx.CLI.Cfg
 		if cfg.BoardByProject == nil {
 			cfg.BoardByProject = map[string]int{}
 		}
 		cfg.BoardByProject[projectKey] = cfg.BoardID
-		if cfg.BoardNameByProject == nil {
-			cfg.BoardNameByProject = map[string]string{}
-		}
-		cfg.BoardNameByProject[projectKey] = boardNameByID(boards, cfg.BoardID)
-		if err := config.Save(cfg); err != nil {
-			return 0, err
-		}
 		ctx.CLI.Cfg = cfg
 		return cfg.BoardID, nil
 	}
 
+	boards, err := client.ListBoards(context.Background(), projectKey)
+	if err != nil {
+		return 0, err
+	}
 	if len(boards) == 0 {
 		return 0, fmt.Errorf("no Jira boards found for project %s", projectKey)
 	}
@@ -1466,6 +1428,74 @@ func boardNameByID(boards []jira.Board, id int) string {
 	return ""
 }
 
+func resolveBoardSprints(ctx *Context, client *jira.Client, projectKey string, boardID int) (int, []jira.Sprint, error) {
+	sprints, err := client.ListSprints(context.Background(), boardID)
+	if err == nil {
+		return boardID, sprints, nil
+	}
+	if !looksLikeNotFound(err) || !configuredBoardForProject(ctx, projectKey, boardID) {
+		return 0, nil, err
+	}
+	if clearConfiguredBoard(ctx, projectKey, boardID) != nil {
+		return 0, nil, err
+	}
+	boardID, retryErr := ensureBoard(ctx, client, projectKey)
+	if retryErr != nil {
+		return 0, nil, retryErr
+	}
+	sprints, retryErr = client.ListSprints(context.Background(), boardID)
+	if retryErr != nil {
+		return 0, nil, retryErr
+	}
+	return boardID, sprints, nil
+}
+
+func configuredBoardForProject(ctx *Context, projectKey string, boardID int) bool {
+	if ctx == nil || ctx.CLI == nil {
+		return false
+	}
+	if ctx.CLI.Cfg.BoardByProject != nil && ctx.CLI.Cfg.BoardByProject[projectKey] == boardID && boardID > 0 {
+		return true
+	}
+	return ctx.CLI.Cfg.BoardID == boardID && boardID > 0
+}
+
+func clearConfiguredBoard(ctx *Context, projectKey string, boardID int) error {
+	if ctx == nil || ctx.CLI == nil {
+		return nil
+	}
+	cfg := ctx.CLI.Cfg
+	changed := false
+	if cfg.BoardByProject != nil && cfg.BoardByProject[projectKey] == boardID {
+		delete(cfg.BoardByProject, projectKey)
+		changed = true
+	}
+	if cfg.BoardNameByProject != nil {
+		delete(cfg.BoardNameByProject, projectKey)
+	}
+	if cfg.BoardID == boardID {
+		cfg.BoardID = 0
+		changed = true
+	}
+	if !changed {
+		ctx.CLI.Cfg = cfg
+		return nil
+	}
+	if err := config.Save(cfg); err != nil {
+		return err
+	}
+	ctx.CLI.Cfg = cfg
+	return nil
+}
+
+func looksLikeNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "404") || strings.Contains(msg, "not found")
+}
+
 func emptyFallback(value string) string {
 	if strings.TrimSpace(value) == "" {
 		return "-"
@@ -1503,7 +1533,7 @@ func (c *CatCmd) Run(ctx *Context) error {
 	if err != nil {
 		return err
 	}
-	sprints, err := client.ListSprints(context.Background(), boardID)
+	_, sprints, err := resolveBoardSprints(ctx, client, projectKey, boardID)
 	if err != nil {
 		return err
 	}

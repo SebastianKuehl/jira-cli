@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/sebastian/jira-cli/internal/config"
@@ -205,6 +206,104 @@ func TestLsCmdRunMarksLocalSprintsInList(t *testing.T) {
 	}
 	if lines[1] != "Sprint Beta" {
 		t.Fatalf("expected unmarked remote sprint, got %q", lines[1])
+	}
+}
+
+func TestEnsureBoardUsesConfiguredBoardWithoutListingBoards(t *testing.T) {
+	var boardRequests int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/rest/agile/1.0/board" {
+			atomic.AddInt32(&boardRequests, 1)
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	ctx := &Context{CLI: &CLI{
+		BaseURL: server.URL,
+		Token:   "token",
+		Cfg: config.Config{
+			Project: "PROJ",
+			BoardByProject: map[string]int{
+				"PROJ": 17,
+			},
+		},
+	}}
+
+	client, err := ctx.JiraClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	boardID, err := ensureBoard(ctx, client, "PROJ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if boardID != 17 {
+		t.Fatalf("expected configured board id 17, got %d", boardID)
+	}
+	if got := atomic.LoadInt32(&boardRequests); got != 0 {
+		t.Fatalf("expected no board list request, got %d", got)
+	}
+}
+
+func TestResolveBoardSprintsClearsStaleConfiguredBoardOnNotFound(t *testing.T) {
+	var boardRequests int32
+	var sprintRequests int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/rest/agile/1.0/board/17/sprint":
+			atomic.AddInt32(&sprintRequests, 1)
+			http.NotFound(w, r)
+		case r.URL.Path == "/rest/agile/1.0/board":
+			atomic.AddInt32(&boardRequests, 1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"isLast":true,"values":[{"id":19,"name":"Fallback Board"}]}`))
+		case r.URL.Path == "/rest/agile/1.0/board/19/sprint":
+			atomic.AddInt32(&sprintRequests, 1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"isLast":true,"values":[{"id":23,"name":"Sprint Alpha"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	cfgDir := t.TempDir()
+	t.Setenv("JIRA_CONFIG_DIR", cfgDir)
+	ctx := &Context{CLI: &CLI{
+		BaseURL: server.URL,
+		Token:   "token",
+		Cfg: config.Config{
+			Project: "PROJ",
+			BoardID: 19,
+			BoardByProject: map[string]int{
+				"PROJ": 17,
+			},
+		},
+	}}
+
+	client, err := ctx.JiraClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	boardID, sprints, err := resolveBoardSprints(ctx, client, "PROJ", 17)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if boardID != 19 {
+		t.Fatalf("expected fallback board id 19, got %d", boardID)
+	}
+	if len(sprints) != 1 || sprints[0].Name != "Sprint Alpha" {
+		t.Fatalf("expected fallback sprint list, got %#v", sprints)
+	}
+	if got := atomic.LoadInt32(&boardRequests); got != 0 {
+		t.Fatalf("expected no board list request when fallback BoardID is configured, got %d", got)
+	}
+	if got := atomic.LoadInt32(&sprintRequests); got != 2 {
+		t.Fatalf("expected two sprint requests (stale + retry), got %d", got)
+	}
+	if ctx.CLI.Cfg.BoardByProject["PROJ"] != 19 {
+		t.Fatalf("expected board mapping updated to fallback board, got %#v", ctx.CLI.Cfg.BoardByProject)
 	}
 }
 
