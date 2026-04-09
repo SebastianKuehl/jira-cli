@@ -293,7 +293,7 @@ func (c *Client) DoTransition(ctx context.Context, issueKey, transitionID string
 	if c.BaseURL == "" || c.Token == "" {
 		return errors.New("missing jira credentials")
 	}
-	body := strings.NewReader(fmt.Sprintf(`{"transition":{"id":%q}}`, transitionID))
+	body := strings.NewReader(fmt.Sprintf(`{"transition":{"id":"%s"}}`, transitionID))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		fmt.Sprintf("%s/rest/api/2/issue/%s/transitions", c.BaseURL, issueKey), body)
 	if err != nil {
@@ -301,6 +301,7 @@ func (c *Client) DoTransition(ctx context.Context, issueKey, transitionID string
 	}
 	req.Header.Set("Authorization", "Bearer "+c.Token)
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Atlassian-Token", "no-check")
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
 		return err
