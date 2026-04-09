@@ -14,6 +14,7 @@ const (
 
 type Config struct {
 	Project  string `json:"project"`
+	BoardID  int    `json:"board_id,omitempty"`
 	BasePath string `json:"base_path,omitempty"`
 }
 

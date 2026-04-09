@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -21,6 +23,26 @@ type Client struct {
 type Project struct {
 	Key  string `json:"key"`
 	Name string `json:"name"`
+}
+
+type Board struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+}
+
+type Sprint struct {
+	ID    int    `json:"id"`
+	Name  string `json:"name"`
+	State string `json:"state"`
+}
+
+type IssueTicket struct {
+	ID       string
+	Title    string
+	Assignee string
+	Reporter string
+	State    string
+	PRLink   string
 }
 
 func NewClient(baseURL, token string) *Client {
@@ -79,4 +101,180 @@ func (c *Client) TestConnection(ctx context.Context) error {
 		return fmt.Errorf("jira test failed with status %s", resp.Status)
 	}
 	return nil
+}
+
+func (c *Client) ListBoards(ctx context.Context, projectKey string) ([]Board, error) {
+	if c.BaseURL == "" || c.Token == "" {
+		return nil, errors.New("missing jira credentials")
+	}
+	out := make([]Board, 0)
+	startAt := 0
+	for {
+		u, err := url.Parse(c.BaseURL + "/rest/agile/1.0/board")
+		if err != nil {
+			return nil, err
+		}
+		q := u.Query()
+		q.Set("projectKeyOrId", projectKey)
+		q.Set("startAt", strconv.Itoa(startAt))
+		q.Set("maxResults", "50")
+		u.RawQuery = q.Encode()
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+		req.Header.Set("Accept", "application/json")
+		resp, err := c.HTTPClient.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode >= 300 {
+			resp.Body.Close()
+			return nil, fmt.Errorf("jira board list failed with status %s", resp.Status)
+		}
+		var parsed struct {
+			StartAt    int     `json:"startAt"`
+			MaxResults int     `json:"maxResults"`
+			IsLast     bool    `json:"isLast"`
+			Values     []Board `json:"values"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+			resp.Body.Close()
+			return nil, err
+		}
+		resp.Body.Close()
+		out = append(out, parsed.Values...)
+		if parsed.IsLast || len(parsed.Values) == 0 {
+			break
+		}
+		startAt += len(parsed.Values)
+	}
+	return out, nil
+}
+
+func (c *Client) ListSprints(ctx context.Context, boardID int) ([]Sprint, error) {
+	if c.BaseURL == "" || c.Token == "" {
+		return nil, errors.New("missing jira credentials")
+	}
+	out := make([]Sprint, 0)
+	startAt := 0
+	for {
+		u, err := url.Parse(fmt.Sprintf("%s/rest/agile/1.0/board/%d/sprint", c.BaseURL, boardID))
+		if err != nil {
+			return nil, err
+		}
+		q := u.Query()
+		q.Set("state", "active,future,closed")
+		q.Set("startAt", strconv.Itoa(startAt))
+		q.Set("maxResults", "50")
+		u.RawQuery = q.Encode()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+		req.Header.Set("Accept", "application/json")
+		resp, err := c.HTTPClient.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode >= 300 {
+			resp.Body.Close()
+			return nil, fmt.Errorf("jira sprint list failed with status %s", resp.Status)
+		}
+		var parsed struct {
+			IsLast bool     `json:"isLast"`
+			Values []Sprint `json:"values"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+			resp.Body.Close()
+			return nil, err
+		}
+		resp.Body.Close()
+		out = append(out, parsed.Values...)
+		if parsed.IsLast || len(parsed.Values) == 0 {
+			break
+		}
+		startAt += len(parsed.Values)
+	}
+	return out, nil
+}
+
+func (c *Client) ListSprintTickets(ctx context.Context, boardID, sprintID int) ([]IssueTicket, error) {
+	if c.BaseURL == "" || c.Token == "" {
+		return nil, errors.New("missing jira credentials")
+	}
+	out := make([]IssueTicket, 0)
+	startAt := 0
+	for {
+		u, err := url.Parse(fmt.Sprintf("%s/rest/agile/1.0/board/%d/sprint/%d/issue", c.BaseURL, boardID, sprintID))
+		if err != nil {
+			return nil, err
+		}
+		q := u.Query()
+		q.Set("startAt", strconv.Itoa(startAt))
+		q.Set("maxResults", "50")
+		u.RawQuery = q.Encode()
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+		req.Header.Set("Accept", "application/json")
+		resp, err := c.HTTPClient.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode >= 300 {
+			resp.Body.Close()
+			return nil, fmt.Errorf("jira sprint issue list failed with status %s", resp.Status)
+		}
+		var parsed struct {
+			StartAt    int `json:"startAt"`
+			MaxResults int `json:"maxResults"`
+			Total      int `json:"total"`
+			Issues     []struct {
+				Key    string `json:"key"`
+				Fields struct {
+					Summary string `json:"summary"`
+					Status  struct {
+						Name string `json:"name"`
+					} `json:"status"`
+					Assignee *struct {
+						DisplayName string `json:"displayName"`
+					} `json:"assignee"`
+					Reporter *struct {
+						DisplayName string `json:"displayName"`
+					} `json:"reporter"`
+				} `json:"fields"`
+			} `json:"issues"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+			resp.Body.Close()
+			return nil, err
+		}
+		resp.Body.Close()
+		for _, issue := range parsed.Issues {
+			item := IssueTicket{
+				ID:    issue.Key,
+				Title: issue.Fields.Summary,
+				State: issue.Fields.Status.Name,
+			}
+			if issue.Fields.Assignee != nil {
+				item.Assignee = issue.Fields.Assignee.DisplayName
+			}
+			if issue.Fields.Reporter != nil {
+				item.Reporter = issue.Fields.Reporter.DisplayName
+			}
+			out = append(out, item)
+		}
+		startAt += len(parsed.Issues)
+		if startAt >= parsed.Total || len(parsed.Issues) == 0 {
+			break
+		}
+	}
+	return out, nil
 }

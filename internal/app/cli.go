@@ -15,7 +15,6 @@ import (
 	"github.com/sebastian/jira-cli/internal/config"
 	"github.com/sebastian/jira-cli/internal/env"
 	"github.com/sebastian/jira-cli/internal/jira"
-	"github.com/sebastian/jira-cli/internal/tickets"
 )
 
 type App struct {
@@ -119,6 +118,7 @@ func (t *TestCmd) Run(ctx *Context) error {
 
 type ConfigureCmd struct {
 	Project  string `help:"Default Jira project key."`
+	BoardID  int    `help:"Optional default Jira board ID."`
 	BasePath string `help:"Optional base path to write markdown files."`
 }
 
@@ -158,8 +158,15 @@ func (c *ConfigureCmd) Run(ctx *Context) error {
 	}
 
 	cfg := ctx.CLI.Config
+	projectChanged := false
 	if c.Project != "" {
+		projectChanged = cfg.Project != c.Project
 		cfg.Project = c.Project
+	}
+	if c.BoardID > 0 {
+		cfg.BoardID = c.BoardID
+	} else if projectChanged {
+		cfg.BoardID = 0
 	}
 
 	basePathProvidedByFlag := c.BasePath != ""
@@ -219,23 +226,40 @@ type LsCmd struct {
 }
 
 func (c *LsCmd) Run(ctx *Context) error {
-	projectPath, err := ctx.ProjectPath()
+	client, err := ctx.JiraClient()
+	if err != nil {
+		return err
+	}
+	projectKey, err := ensureProject(ctx, client)
+	if err != nil {
+		return err
+	}
+	boardID, err := ensureBoard(ctx, client, projectKey)
+	if err != nil {
+		return err
+	}
+	sprints, err := client.ListSprints(context.Background(), boardID)
 	if err != nil {
 		return err
 	}
 
 	if c.Sprint == "" {
-		sprints, err := tickets.ListSprints(projectPath)
-		if err != nil {
-			return err
-		}
 		for _, sprint := range sprints {
-			fmt.Println(sprint)
+			fmt.Println(sprint.Name)
 		}
 		return nil
 	}
-
-	list, err := tickets.ListTickets(projectPath, c.Sprint)
+	var selected *jira.Sprint
+	for i := range sprints {
+		if strings.EqualFold(sprints[i].Name, c.Sprint) || strconv.Itoa(sprints[i].ID) == c.Sprint {
+			selected = &sprints[i]
+			break
+		}
+	}
+	if selected == nil {
+		return fmt.Errorf("sprint %q not found", c.Sprint)
+	}
+	list, err := client.ListSprintTickets(context.Background(), boardID, selected.ID)
 	if err != nil {
 		return err
 	}
@@ -254,6 +278,80 @@ func (c *LsCmd) Run(ctx *Context) error {
 		}
 	}
 	return nil
+}
+
+func ensureProject(ctx *Context, client *jira.Client) (string, error) {
+	if strings.TrimSpace(ctx.CLI.Config.Project) != "" {
+		return ctx.CLI.Config.Project, nil
+	}
+	if !stdinIsTerminal() {
+		return "", errors.New("no project configured; run jira configure or configure in interactive mode")
+	}
+	projects, err := client.ListProjects(context.Background())
+	if err != nil {
+		return "", err
+	}
+	if len(projects) == 0 {
+		return "", errors.New("no Jira projects available")
+	}
+	fmt.Println("Select project:")
+	for i, p := range projects {
+		fmt.Printf("  %d) %s - %s\n", i+1, p.Key, p.Name)
+	}
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Print("Project number: ")
+	raw, err := reader.ReadString('\n')
+	if err != nil {
+		return "", err
+	}
+	selected, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || selected < 1 || selected > len(projects) {
+		return "", errors.New("invalid project selection")
+	}
+	cfg := ctx.CLI.Config
+	cfg.Project = projects[selected-1].Key
+	if err := config.Save(cfg); err != nil {
+		return "", err
+	}
+	ctx.CLI.Config = cfg
+	return cfg.Project, nil
+}
+
+func ensureBoard(ctx *Context, client *jira.Client, projectKey string) (int, error) {
+	if ctx.CLI.Config.BoardID > 0 {
+		return ctx.CLI.Config.BoardID, nil
+	}
+	boards, err := client.ListBoards(context.Background(), projectKey)
+	if err != nil {
+		return 0, err
+	}
+	if len(boards) == 0 {
+		return 0, fmt.Errorf("no Jira boards found for project %s", projectKey)
+	}
+	if !stdinIsTerminal() {
+		return 0, errors.New("no board configured; run jira configure --board-id <id> or use interactive mode")
+	}
+	fmt.Printf("Select board for project %s:\n", projectKey)
+	for i, board := range boards {
+		fmt.Printf("  %d) %d - %s\n", i+1, board.ID, board.Name)
+	}
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Print("Board number: ")
+	raw, err := reader.ReadString('\n')
+	if err != nil {
+		return 0, err
+	}
+	selected, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || selected < 1 || selected > len(boards) {
+		return 0, errors.New("invalid board selection")
+	}
+	cfg := ctx.CLI.Config
+	cfg.BoardID = boards[selected-1].ID
+	if err := config.Save(cfg); err != nil {
+		return 0, err
+	}
+	ctx.CLI.Config = cfg
+	return cfg.BoardID, nil
 }
 
 func emptyFallback(value string) string {
