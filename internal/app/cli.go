@@ -957,6 +957,7 @@ func selectedFetchModes(c *FetchCmd) int {
 
 func (c *FetchCmd) fetchTicket(basePath string, client *jira.Client, boardID int, sprints []jira.Sprint, ticketID string) error {
 	ticketID = strings.ToUpper(strings.TrimSpace(ticketID))
+	fmt.Printf("retrieving data for ticket %s\n", ticketID)
 	sprint, err := findSprintContainingTicket(context.Background(), client, boardID, sprints, ticketID)
 	if err != nil {
 		return err
@@ -994,6 +995,7 @@ func (c *FetchCmd) fetchSprints(basePath string, client *jira.Client, boardID in
 	}
 	fetched := 0
 	for _, sprint := range targets {
+		fmt.Printf("retrieving data for sprint %s\n", sprint.Name)
 		list, err := client.ListSprintTickets(context.Background(), boardID, sprint.ID)
 		if err != nil {
 			return err
@@ -1008,6 +1010,7 @@ func (c *FetchCmd) fetchSprints(basePath string, client *jira.Client, boardID in
 			}
 			fetched++
 		}
+		fmt.Printf("fetched sprint %s (%d ticket(s))\n", sprint.Name, len(list))
 	}
 	if len(targets) == 1 {
 		fmt.Printf("fetched %d ticket(s) for %s\n", fetched, targets[0].Name)

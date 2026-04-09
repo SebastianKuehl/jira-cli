@@ -274,14 +274,22 @@ func TestFetchCmdRunFiltersSprintsByYear(t *testing.T) {
 	}}
 
 	cmd := &FetchCmd{Year: 2026}
-	if err := cmd.Run(ctx); err != nil {
-		t.Fatal(err)
-	}
+	output := captureStdout(t, func() {
+		if err := cmd.Run(ctx); err != nil {
+			t.Fatal(err)
+		}
+	})
 	if _, err := os.Stat(filepath.Join(root, "Sprint 2026", "PROJ-26.md")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(root, "Sprint 2025", "PROJ-25.md")); !os.IsNotExist(err) {
 		t.Fatalf("expected non-matching year sprint to be skipped, stat err=%v", err)
+	}
+	if !strings.Contains(output, "retrieving data for sprint Sprint 2026") {
+		t.Fatalf("expected sprint retrieval progress, got %q", output)
+	}
+	if !strings.Contains(output, "fetched sprint Sprint 2026 (1 ticket(s))") {
+		t.Fatalf("expected fetched sprint summary, got %q", output)
 	}
 }
 
@@ -606,6 +614,55 @@ func TestFetchCmdRunRejectsAmbiguousPositionalTarget(t *testing.T) {
 	err := (&FetchCmd{Target: "PROJ-7"}).Run(ctx)
 	if err == nil || !strings.Contains(err.Error(), "ambiguous") {
 		t.Fatalf("expected ambiguity error, got %v", err)
+	}
+}
+
+func TestFetchCmdRunPrintsProgressForTicketFetch(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/rest/agile/1.0/board":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"isLast":true,"values":[{"id":17,"name":"Backend Board"}]}`))
+		case r.URL.Path == "/rest/agile/1.0/board/17/sprint":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"isLast":true,"values":[{"id":24,"name":"Sprint B"}]}`))
+		case r.URL.Path == "/rest/agile/1.0/board/17/sprint/24/issue":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"total":1,"issues":[{"key":"PROJ-2","fields":{"summary":"Fix fetch","status":{"name":"Todo"}}}]}`))
+		case r.URL.Path == "/rest/api/2/issue/PROJ-2":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"key":"PROJ-2","fields":{"summary":"Fix fetch","description":"Specific ticket body","labels":[],"status":{"name":"Todo"}}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	ctx := &Context{CLI: &CLI{
+		BaseURL: server.URL,
+		Token:   "token",
+		Cfg: config.Config{
+			Project:  "PROJ",
+			BasePath: root,
+			BoardID:  17,
+			BoardByProject: map[string]int{
+				"PROJ": 17,
+			},
+		},
+	}}
+
+	output := captureStdout(t, func() {
+		if err := (&FetchCmd{Target: "PROJ-2"}).Run(ctx); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	if !strings.Contains(output, "retrieving data for ticket PROJ-2") {
+		t.Fatalf("expected ticket retrieval progress, got %q", output)
+	}
+	if !strings.Contains(output, "fetched PROJ-2 into Sprint B") {
+		t.Fatalf("expected final ticket fetch output, got %q", output)
 	}
 }
 
