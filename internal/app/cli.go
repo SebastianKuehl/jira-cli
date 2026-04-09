@@ -139,6 +139,16 @@ func (c *ConfigCmd) Run(ctx *Context) error {
 			fmt.Println("  (config file exists but could not be read:", loadErr, ")")
 		} else {
 			fmt.Println("  Project:   ", cfg.Project)
+			if cfg.Project != "" && cfg.BoardByProject != nil && cfg.BoardByProject[cfg.Project] > 0 {
+				fmt.Println("  Board ID:  ", cfg.BoardByProject[cfg.Project])
+				if cfg.BoardNameByProject != nil && strings.TrimSpace(cfg.BoardNameByProject[cfg.Project]) != "" {
+					fmt.Println("  Board:     ", cfg.BoardNameByProject[cfg.Project])
+				}
+			} else if cfg.BoardID > 0 {
+				fmt.Println("  Board ID:  ", cfg.BoardID)
+			} else {
+				fmt.Println("  Board ID:   (not configured)")
+			}
 			if cfg.BasePath != "" {
 				fmt.Println("  Base path: ", cfg.BasePath)
 			} else {
@@ -165,6 +175,7 @@ func (c *ConfigCmd) Run(ctx *Context) error {
 	if err != nil {
 		return err
 	}
+	fmt.Println("Fetching Jira projects...")
 	projects, err := client.ListProjects(context.Background())
 	if err != nil {
 		return err
@@ -195,6 +206,7 @@ func (c *ConfigCmd) Run(ctx *Context) error {
 		Project: projects[selected-1].Key,
 	}
 
+	fmt.Printf("Fetching Jira boards for project %s...\n", cfg.Project)
 	boards, err := client.ListBoards(context.Background(), cfg.Project)
 	if err != nil {
 		fmt.Println("Warning: unable to list boards, skipping board selection:", err)
@@ -217,6 +229,9 @@ func (c *ConfigCmd) Run(ctx *Context) error {
 			cfg.BoardID = boards[selectedBoard-1].ID
 			cfg.BoardByProject = map[string]int{
 				cfg.Project: cfg.BoardID,
+			}
+			cfg.BoardNameByProject = map[string]string{
+				cfg.Project: boards[selectedBoard-1].Name,
 			}
 		}
 	}
@@ -422,10 +437,24 @@ func ensureBoard(ctx *Context, client *jira.Client, projectKey string) (int, err
 	if ctx.CLI.Cfg.BoardByProject != nil && ctx.CLI.Cfg.BoardByProject[projectKey] > 0 {
 		id := ctx.CLI.Cfg.BoardByProject[projectKey]
 		if isValidBoard(id) {
+			if ctx.CLI.Cfg.BoardNameByProject == nil || strings.TrimSpace(ctx.CLI.Cfg.BoardNameByProject[projectKey]) == "" {
+				cfg := ctx.CLI.Cfg
+				if cfg.BoardNameByProject == nil {
+					cfg.BoardNameByProject = map[string]string{}
+				}
+				cfg.BoardNameByProject[projectKey] = boardNameByID(boards, id)
+				if err := config.Save(cfg); err != nil {
+					return 0, err
+				}
+				ctx.CLI.Cfg = cfg
+			}
 			return id, nil
 		}
 		cfg := ctx.CLI.Cfg
 		delete(cfg.BoardByProject, projectKey)
+		if cfg.BoardNameByProject != nil {
+			delete(cfg.BoardNameByProject, projectKey)
+		}
 		if err := config.Save(cfg); err != nil {
 			return 0, err
 		}
@@ -437,6 +466,10 @@ func ensureBoard(ctx *Context, client *jira.Client, projectKey string) (int, err
 			cfg.BoardByProject = map[string]int{}
 		}
 		cfg.BoardByProject[projectKey] = cfg.BoardID
+		if cfg.BoardNameByProject == nil {
+			cfg.BoardNameByProject = map[string]string{}
+		}
+		cfg.BoardNameByProject[projectKey] = boardNameByID(boards, cfg.BoardID)
 		if err := config.Save(cfg); err != nil {
 			return 0, err
 		}
@@ -470,11 +503,24 @@ func ensureBoard(ctx *Context, client *jira.Client, projectKey string) (int, err
 		cfg.BoardByProject = map[string]int{}
 	}
 	cfg.BoardByProject[projectKey] = cfg.BoardID
+	if cfg.BoardNameByProject == nil {
+		cfg.BoardNameByProject = map[string]string{}
+	}
+	cfg.BoardNameByProject[projectKey] = boards[selected-1].Name
 	if err := config.Save(cfg); err != nil {
 		return 0, err
 	}
 	ctx.CLI.Cfg = cfg
 	return cfg.BoardID, nil
+}
+
+func boardNameByID(boards []jira.Board, id int) string {
+	for _, board := range boards {
+		if board.ID == id {
+			return board.Name
+		}
+	}
+	return ""
 }
 
 func emptyFallback(value string) string {

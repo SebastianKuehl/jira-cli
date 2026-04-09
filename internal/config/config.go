@@ -13,10 +13,11 @@ const (
 )
 
 type Config struct {
-	Project         string         `json:"project"`
-	BoardID         int            `json:"board_id,omitempty"`
-	BoardByProject  map[string]int `json:"board_by_project,omitempty"`
-	BasePath        string         `json:"base_path,omitempty"`
+	Project            string            `json:"project"`
+	BoardID            int               `json:"board_id,omitempty"`
+	BoardByProject     map[string]int    `json:"board_by_project,omitempty"`
+	BoardNameByProject map[string]string `json:"board_name_by_project,omitempty"`
+	BasePath           string            `json:"base_path,omitempty"`
 }
 
 func Path() (string, error) {
