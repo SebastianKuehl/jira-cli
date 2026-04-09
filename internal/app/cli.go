@@ -4,11 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -154,6 +152,15 @@ func (c *Context) JiraClient() (*jira.Client, error) {
 	return jira.NewClient(c.CLI.BaseURL, c.CLI.Token), nil
 }
 
+func (c *Context) JiraClientForUpdateCache(update bool) (*jira.Client, error) {
+	client, err := c.JiraClient()
+	if err != nil {
+		return nil, err
+	}
+	client.RefreshCache = update
+	return client, nil
+}
+
 func (c *Context) ProjectPath() (string, error) {
 	if c.CLI.Cfg.BasePath == "" {
 		return os.Getwd()
@@ -164,7 +171,7 @@ func (c *Context) ProjectPath() (string, error) {
 type TestCmd struct{}
 
 func (t *TestCmd) Run(ctx *Context) error {
-	client, err := ctx.JiraClient()
+	client, err := ctx.JiraClientForUpdateCache(true)
 	if err != nil {
 		return err
 	}
@@ -1275,24 +1282,11 @@ type LsCmd struct {
 }
 
 func (c *LsCmd) Run(ctx *Context) error {
-	cacheKey := cacheKey(lsCacheCommand(c.Verbose), c.Sprint)
 	basePath, err := ctx.ProjectPath()
 	if err != nil {
 		return err
 	}
-	if !c.UpdateCache {
-		if cached, ok, err := readCommandCache(ctx, cacheKey); err != nil {
-			return err
-		} else if ok {
-			if c.Sprint == "" {
-				cached = annotateSprintListOutput(basePath, cached)
-			}
-			fmt.Print(cached)
-			printCacheNote(cacheKey)
-			return nil
-		}
-	}
-	client, err := ctx.JiraClient()
+	client, err := ctx.JiraClientForUpdateCache(c.UpdateCache)
 	if err != nil {
 		return err
 	}
@@ -1310,16 +1304,7 @@ func (c *LsCmd) Run(ctx *Context) error {
 	}
 
 	if c.Sprint == "" {
-		var raw strings.Builder
-		for _, sprint := range sprints {
-			raw.WriteString(sprint.Name)
-			raw.WriteByte('\n')
-		}
-		rawOutput := raw.String()
-		if err := writeCommandCache(ctx, cacheKey, rawOutput); err != nil {
-			return err
-		}
-		output := annotateSprintListOutput(basePath, rawOutput)
+		output := renderSprintListOutput(basePath, sprints)
 		fmt.Print(output)
 		return nil
 	}
@@ -1335,9 +1320,6 @@ func (c *LsCmd) Run(ctx *Context) error {
 		return err
 	}
 	output := renderLsOutput(*selected, list, c.Verbose)
-	if err := writeCommandCache(ctx, cacheKey, output); err != nil {
-		return err
-	}
 	fmt.Print(output)
 	return nil
 }
@@ -1494,18 +1476,7 @@ type CatCmd struct {
 }
 
 func (c *CatCmd) Run(ctx *Context) error {
-	cacheKey := cacheKey("cat", c.Target)
-	if !c.UpdateCache {
-		if cached, ok, err := readCommandCache(ctx, cacheKey); err != nil {
-			return err
-		} else if ok {
-			fmt.Print(cached)
-			printCacheNote(cacheKey)
-			return nil
-		}
-	}
-
-	client, err := ctx.JiraClient()
+	client, err := ctx.JiraClientForUpdateCache(c.UpdateCache)
 	if err != nil {
 		return err
 	}
@@ -1516,9 +1487,6 @@ func (c *CatCmd) Run(ctx *Context) error {
 			return err
 		}
 		output := renderTicket(ticket)
-		if err := writeCommandCache(ctx, cacheKey, output); err != nil {
-			return err
-		}
 		fmt.Print(output)
 		return nil
 	}
@@ -1549,9 +1517,6 @@ func (c *CatCmd) Run(ctx *Context) error {
 			if !strings.HasSuffix(output, "\n") {
 				output += "\n"
 			}
-		}
-		if err := writeCommandCache(ctx, cacheKey, output); err != nil {
-			return err
 		}
 		fmt.Print(output)
 		return nil
@@ -1632,76 +1597,14 @@ func expectedSprintDir(basePath string, sprint jira.Sprint) (string, error) {
 	return filepath.Join(baseAbs, sprintFolderName(sprint)), nil
 }
 
-func annotateSprintListOutput(basePath, output string) string {
-	lines := strings.Split(output, "\n")
-	for i, line := range lines {
-		if line == "" {
-			continue
-		}
-		lines[i] = line + localSprintNote(basePath, jira.Sprint{Name: line})
+func renderSprintListOutput(basePath string, sprints []jira.Sprint) string {
+	var b strings.Builder
+	for _, sprint := range sprints {
+		b.WriteString(sprint.Name)
+		b.WriteString(localSprintNote(basePath, sprint))
+		b.WriteByte('\n')
 	}
-	return strings.Join(lines, "\n")
-}
-
-func cacheKey(command, target string) string {
-	return command + "|" + strings.TrimSpace(target)
-}
-
-func lsCacheCommand(verbose bool) string {
-	if verbose {
-		return "ls-v"
-	}
-	return "ls"
-}
-
-func cachePath(ctx *Context, key string) (string, error) {
-	dir, err := config.CacheDir()
-	if err != nil {
-		return "", err
-	}
-	scope := cacheScope(ctx)
-	scopeSum := sha256.Sum256([]byte(scope))
-	sum := sha256.Sum256([]byte(key))
-	name := url.PathEscape(key)
-	return filepath.Join(dir, fmt.Sprintf("%x", scopeSum[:6]), fmt.Sprintf("%s-%x.txt", name, sum[:4])), nil
-}
-
-func readCommandCache(ctx *Context, key string) (string, bool, error) {
-	path, err := cachePath(ctx, key)
-	if err != nil {
-		return "", false, err
-	}
-	body, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return "", false, nil
-	}
-	if err != nil {
-		return "", false, err
-	}
-	return string(body), true, nil
-}
-
-func writeCommandCache(ctx *Context, key, output string) error {
-	path, err := cachePath(ctx, key)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(path, []byte(output), 0o600)
-}
-
-func printCacheNote(key string) {
-	fmt.Printf("⚠️ cache hit: %s\n", key)
-}
-
-func cacheScope(ctx *Context) string {
-	if ctx == nil || ctx.CLI == nil {
-		return ""
-	}
-	tokenHash := sha256.Sum256([]byte(ctx.CLI.Token))
-	return fmt.Sprintf("%s|%s|%d|%x", ctx.CLI.BaseURL, ctx.CLI.Cfg.Project, ctx.CLI.Cfg.BoardID, tokenHash[:6])
+	return b.String()
 }
 
 // isTicketID returns true when s looks like a Jira ticket key (e.g. PROJ-123 or proj-123).

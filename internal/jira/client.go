@@ -3,22 +3,30 @@ package jira
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sebastian/jira-cli/internal/config"
 )
 
 var ErrNotImplemented = errors.New("not implemented")
+var errGETNotFound = errors.New("jira resource not found")
 
 type Client struct {
-	BaseURL    string
-	Token      string
-	HTTPClient *http.Client
+	BaseURL      string
+	Token        string
+	HTTPClient   *http.Client
+	RefreshCache bool
 }
 
 type Project struct {
@@ -76,24 +84,8 @@ func (c *Client) ListProjects(ctx context.Context) ([]Project, error) {
 	if c.BaseURL == "" || c.Token == "" {
 		return nil, errors.New("missing jira credentials")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/rest/api/2/project", nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+c.Token)
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := c.HTTPClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("jira project list failed with status %s", resp.Status)
-	}
-
 	var projects []Project
-	if err := json.NewDecoder(resp.Body).Decode(&projects); err != nil {
+	if err := c.getJSON(ctx, c.BaseURL+"/rest/api/2/project", &projects); err != nil {
 		return nil, err
 	}
 	return projects, nil
@@ -137,31 +129,15 @@ func (c *Client) ListBoards(ctx context.Context, projectKey string) ([]Board, er
 		q.Set("maxResults", "50")
 		u.RawQuery = q.Encode()
 
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
-		if err != nil {
-			return nil, err
-		}
-		req.Header.Set("Authorization", "Bearer "+c.Token)
-		req.Header.Set("Accept", "application/json")
-		resp, err := c.HTTPClient.Do(req)
-		if err != nil {
-			return nil, err
-		}
-		if resp.StatusCode >= 300 {
-			resp.Body.Close()
-			return nil, fmt.Errorf("jira board list failed with status %s", resp.Status)
-		}
 		var parsed struct {
 			StartAt    int     `json:"startAt"`
 			MaxResults int     `json:"maxResults"`
 			IsLast     bool    `json:"isLast"`
 			Values     []Board `json:"values"`
 		}
-		if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
-			resp.Body.Close()
+		if err := c.getJSON(ctx, u.String(), &parsed); err != nil {
 			return nil, err
 		}
-		resp.Body.Close()
 		out = append(out, parsed.Values...)
 		if parsed.IsLast || len(parsed.Values) == 0 {
 			break
@@ -187,29 +163,13 @@ func (c *Client) ListSprints(ctx context.Context, boardID int) ([]Sprint, error)
 		q.Set("startAt", strconv.Itoa(startAt))
 		q.Set("maxResults", "50")
 		u.RawQuery = q.Encode()
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
-		if err != nil {
-			return nil, err
-		}
-		req.Header.Set("Authorization", "Bearer "+c.Token)
-		req.Header.Set("Accept", "application/json")
-		resp, err := c.HTTPClient.Do(req)
-		if err != nil {
-			return nil, err
-		}
-		if resp.StatusCode >= 300 {
-			resp.Body.Close()
-			return nil, fmt.Errorf("jira sprint list failed with status %s", resp.Status)
-		}
 		var parsed struct {
 			IsLast bool     `json:"isLast"`
 			Values []Sprint `json:"values"`
 		}
-		if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
-			resp.Body.Close()
+		if err := c.getJSON(ctx, u.String(), &parsed); err != nil {
 			return nil, err
 		}
-		resp.Body.Close()
 		out = append(out, parsed.Values...)
 		if parsed.IsLast || len(parsed.Values) == 0 {
 			break
@@ -229,25 +189,10 @@ func (c *Client) GetTransitions(ctx context.Context, issueKey string) ([]Transit
 	if c.BaseURL == "" || c.Token == "" {
 		return nil, errors.New("missing jira credentials")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		fmt.Sprintf("%s/rest/api/2/issue/%s/transitions", c.BaseURL, issueKey), nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+c.Token)
-	req.Header.Set("Accept", "application/json")
-	resp, err := c.HTTPClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("jira transitions request failed with status %s", resp.Status)
-	}
 	var parsed struct {
 		Transitions []Transition `json:"transitions"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+	if err := c.getJSON(ctx, fmt.Sprintf("%s/rest/api/2/issue/%s/transitions", c.BaseURL, issueKey), &parsed); err != nil {
 		return nil, err
 	}
 	return parsed.Transitions, nil
@@ -275,6 +220,7 @@ func (c *Client) DoTransition(ctx context.Context, issueKey, transitionID string
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("jira transition failed with status %s", resp.Status)
 	}
+	c.clearCachedGETs()
 	return nil
 }
 
@@ -299,6 +245,7 @@ func (c *Client) UnassignTicket(ctx context.Context, issueKey string) error {
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("jira unassign failed with status %s", resp.Status)
 	}
+	c.clearCachedGETs()
 	return nil
 }
 
@@ -318,20 +265,6 @@ func (c *Client) ListSprintTickets(ctx context.Context, boardID, sprintID int) (
 		q.Set("maxResults", "50")
 		u.RawQuery = q.Encode()
 
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
-		if err != nil {
-			return nil, err
-		}
-		req.Header.Set("Authorization", "Bearer "+c.Token)
-		req.Header.Set("Accept", "application/json")
-		resp, err := c.HTTPClient.Do(req)
-		if err != nil {
-			return nil, err
-		}
-		if resp.StatusCode >= 300 {
-			resp.Body.Close()
-			return nil, fmt.Errorf("jira sprint issue list failed with status %s", resp.Status)
-		}
 		var parsed struct {
 			StartAt    int `json:"startAt"`
 			MaxResults int `json:"maxResults"`
@@ -352,11 +285,9 @@ func (c *Client) ListSprintTickets(ctx context.Context, boardID, sprintID int) (
 				} `json:"fields"`
 			} `json:"issues"`
 		}
-		if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
-			resp.Body.Close()
+		if err := c.getJSON(ctx, u.String(), &parsed); err != nil {
 			return nil, err
 		}
-		resp.Body.Close()
 		for _, issue := range parsed.Issues {
 			item := IssueTicket{
 				ID:    issue.Key,
@@ -384,24 +315,6 @@ func (c *Client) GetTicket(ctx context.Context, issueKey string) (IssueTicket, e
 		return IssueTicket{}, errors.New("missing jira credentials")
 	}
 	u := fmt.Sprintf("%s/rest/api/2/issue/%s", c.BaseURL, url.PathEscape(issueKey))
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-	if err != nil {
-		return IssueTicket{}, err
-	}
-	req.Header.Set("Authorization", "Bearer "+c.Token)
-	req.Header.Set("Accept", "application/json")
-	resp, err := c.HTTPClient.Do(req)
-	if err != nil {
-		return IssueTicket{}, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
-		return IssueTicket{}, fmt.Errorf("ticket %q not found", issueKey)
-	}
-	if resp.StatusCode >= 300 {
-		return IssueTicket{}, fmt.Errorf("jira get issue failed with status %s", resp.Status)
-	}
-
 	var parsed struct {
 		Key    string `json:"key"`
 		Fields struct {
@@ -422,7 +335,10 @@ func (c *Client) GetTicket(ctx context.Context, issueKey string) (IssueTicket, e
 			} `json:"reporter"`
 		} `json:"fields"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+	if err := c.getJSON(ctx, u, &parsed); err != nil {
+		if errors.Is(err, errGETNotFound) {
+			return IssueTicket{}, fmt.Errorf("ticket %q not found", issueKey)
+		}
 		return IssueTicket{}, err
 	}
 
@@ -493,22 +409,8 @@ func extractADFText(n *adfNode) string {
 }
 
 func (c *Client) GetCurrentUser(ctx context.Context) (User, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/rest/api/2/myself", nil)
-	if err != nil {
-		return User{}, err
-	}
-	req.Header.Set("Authorization", "Bearer "+c.Token)
-	req.Header.Set("Accept", "application/json")
-	resp, err := c.HTTPClient.Do(req)
-	if err != nil {
-		return User{}, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		return User{}, fmt.Errorf("get current user failed with status %s", resp.Status)
-	}
 	var u User
-	if err := json.NewDecoder(resp.Body).Decode(&u); err != nil {
+	if err := c.getJSON(ctx, c.BaseURL+"/rest/api/2/myself", &u); err != nil {
 		return User{}, err
 	}
 	return u, nil
@@ -528,24 +430,10 @@ func (c *Client) SearchAssignableUsers(ctx context.Context, issueKey, query stri
 	q.Set("query", query)
 	u.RawQuery = q.Encode()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+c.Token)
-	req.Header.Set("Accept", "application/json")
-	resp, err := c.HTTPClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("list assignable users failed with status %s", resp.Status)
-	}
 	var envelope struct {
 		Users []User `json:"users"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+	if err := c.getJSON(ctx, u.String(), &envelope); err != nil {
 		return nil, err
 	}
 	return envelope.Users, nil
@@ -561,7 +449,31 @@ func (c *Client) SearchUsers(ctx context.Context, query string) ([]User, error) 
 	q.Set("maxResults", "20")
 	u.RawQuery = q.Encode()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	var users []User
+	if err := c.getJSON(ctx, u.String(), &users); err != nil {
+		return nil, err
+	}
+	return users, nil
+}
+
+func (c *Client) getJSON(ctx context.Context, target string, out any) error {
+	body, err := c.getBody(ctx, target)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(body, out)
+}
+
+func (c *Client) getBody(ctx context.Context, target string) ([]byte, error) {
+	if c.BaseURL == "" || c.Token == "" {
+		return nil, errors.New("missing jira credentials")
+	}
+	if !c.RefreshCache {
+		if body, ok, err := c.readCachedGET(target); err == nil && ok {
+			return body, nil
+		}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -572,14 +484,71 @@ func (c *Client) SearchUsers(ctx context.Context, query string) ([]User, error) 
 		return nil, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("user search failed with status %s", resp.Status)
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, errGETNotFound
 	}
-	var users []User
-	if err := json.NewDecoder(resp.Body).Decode(&users); err != nil {
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("jira get failed with status %s", resp.Status)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
 		return nil, err
 	}
-	return users, nil
+	_ = c.writeCachedGET(target, body)
+	return body, nil
+}
+
+func (c *Client) readCachedGET(target string) ([]byte, bool, error) {
+	path, err := c.cachePath(target)
+	if err != nil {
+		return nil, false, err
+	}
+	body, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return body, true, nil
+}
+
+func (c *Client) writeCachedGET(target string, body []byte) error {
+	path, err := c.cachePath(target)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, body, 0o600)
+}
+
+func (c *Client) cachePath(target string) (string, error) {
+	dir, err := c.cacheScopeDir()
+	if err != nil {
+		return "", err
+	}
+	key := http.MethodGet + "|" + target
+	keySum := sha256.Sum256([]byte(key))
+	return filepath.Join(dir, fmt.Sprintf("%x.json", keySum)), nil
+}
+
+func (c *Client) cacheScopeDir() (string, error) {
+	dir, err := config.CacheDir()
+	if err != nil {
+		return "", err
+	}
+	scopeSum := sha256.Sum256([]byte(strings.TrimRight(c.BaseURL, "/") + "|" + c.Token))
+	return filepath.Join(dir, "http", fmt.Sprintf("%x", scopeSum[:6])), nil
+}
+
+func (c *Client) clearCachedGETs() {
+	dir, err := c.cacheScopeDir()
+	if err != nil {
+		return
+	}
+	_ = os.RemoveAll(dir)
 }
 
 // AssignTicket assigns a Jira issue to the given user. Pass nil to unassign.
@@ -614,5 +583,6 @@ func (c *Client) AssignTicket(ctx context.Context, issueKey string, user *User) 
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("assign ticket failed with status %s", resp.Status)
 	}
+	c.clearCachedGETs()
 	return nil
 }
