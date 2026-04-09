@@ -38,6 +38,13 @@ func (a *App) Run(args []string) error {
 	if err != nil {
 		return err
 	}
+	if len(args) == 0 {
+		ctx, err := kong.Trace(parser, args)
+		if err != nil {
+			return err
+		}
+		return ctx.PrintUsage(false)
+	}
 	ctx, err := parser.Parse(args)
 	if err != nil {
 		return err

@@ -1,6 +1,8 @@
 package app
 
 import (
+	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +11,35 @@ import (
 	"github.com/sebastian/jira-cli/internal/config"
 	"github.com/sebastian/jira-cli/internal/jira"
 )
+
+func TestAppRunWithoutArgsPrintsHelp(t *testing.T) {
+	origStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+
+	os.Stdout = w
+	defer func() { os.Stdout = origStdout }()
+
+	done := make(chan string, 1)
+	go func() {
+		var buf bytes.Buffer
+		_, _ = io.Copy(&buf, r)
+		done <- buf.String()
+	}()
+
+	if err := New().Run([]string{}); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = w.Close()
+	output := <-done
+	if !strings.Contains(output, "Usage: jira <command> [flags]") {
+		t.Fatalf("expected help output, got %q", output)
+	}
+}
 
 func TestFindSprintMatchesExactName(t *testing.T) {
 	sprints := []jira.Sprint{
