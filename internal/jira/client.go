@@ -313,6 +313,30 @@ func (c *Client) DoTransition(ctx context.Context, issueKey, transitionID string
 	return nil
 }
 
+// UnassignTicket removes the assignee from a Jira issue.
+func (c *Client) UnassignTicket(ctx context.Context, issueKey string) error {
+	if c.BaseURL == "" || c.Token == "" {
+		return errors.New("missing jira credentials")
+	}
+	body := strings.NewReader(`{"name":null}`)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut,
+		fmt.Sprintf("%s/rest/api/2/issue/%s/assignee", c.BaseURL, issueKey), body)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("jira unassign failed with status %s", resp.Status)
+	}
+	return nil
+}
+
 func (c *Client) ListSprintTickets(ctx context.Context, boardID, sprintID int) ([]IssueTicket, error) {
 	if c.BaseURL == "" || c.Token == "" {
 		return nil, errors.New("missing jira credentials")

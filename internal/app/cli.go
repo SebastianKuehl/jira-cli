@@ -693,6 +693,13 @@ type UnassignCmd struct {
 }
 
 func (c *UnassignCmd) Run(ctx *Context) error {
-	_ = ctx
-	return jira.ErrNotImplemented
+	client, err := ctx.JiraClient()
+	if err != nil {
+		return err
+	}
+	if err := client.UnassignTicket(context.Background(), c.ID); err != nil {
+		return err
+	}
+	fmt.Printf("%s unassigned\n", c.ID)
+	return nil
 }
