@@ -1,0 +1,15 @@
+version: 2
+
+project_name: jira
+
+builds:
+  - id: jira
+    main: ./cmd/jira
+    binary: jira
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
