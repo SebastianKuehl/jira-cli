@@ -1,17 +1,20 @@
 # jira-cli
 
-Minimal Jira CLI for syncing Jira tickets into local Markdown files, grouped by sprint.
+Jira CLI for syncing Jira tickets into local Markdown files, grouped by sprint folders.
 
 ## Features
 
 - Authenticate with Jira using command-line flags, environment variables, or a local `.env`
 - Configure a default Jira project, board, and local base path
 - Fetch all tickets, a single sprint, or a single ticket into Markdown
-- List available sprints or the tickets inside a sprint, with the sprint header shown before ticket output
+- Bulk-fetch ticket details for selected sprints and write shared tickets into each matching sprint folder
+- Reuse cached Jira GET responses across commands through transport-level caching
+- List available sprints with their Jira sprint IDs or list the tickets inside a sprint
 - Print a sprint goal or full ticket details to the terminal
 - Move tickets through workflow transitions
 - Assign and unassign tickets with interactive user selection when needed
 - Remove local config, sprint folders, or ticket files, including fragment-based sprint selection
+- Print the CLI version with `jira --version`
 
 ## Prerequisites
 
@@ -84,6 +87,7 @@ Show help:
 ```sh
 jira
 jira --help
+jira --version
 ```
 
 Check connectivity:
@@ -103,6 +107,13 @@ Fetch everything for the configured board:
 ```sh
 jira fetch
 ```
+
+`jira fetch` first resolves the target sprint IDs, then bulk-loads ticket details for the full sprint set. While it runs, it prints:
+
+- one line listing the selected sprints being retrieved
+- one line per sprint when markdown writing starts
+- one line per sprint when writing is complete
+- one final summary line
 
 Fetch one sprint by exact name or sprint ID:
 
@@ -133,6 +144,8 @@ jira ls "Sprint 42"
 jira ls 201
 jira ls "Sprint 42" --verbose
 ```
+
+`jira ls` prints sprint names as `Sprint Name (ID)`, so the displayed value can be copied back into commands that accept a sprint selector.
 
 `jira ls <sprint>` accepts:
 
@@ -186,6 +199,19 @@ Fetched tickets are written under the configured base path using sprint-named fo
 - content:
   - frontmatter with Jira metadata
   - ticket body
+
+If a ticket belongs to more than one selected sprint, the CLI writes the same markdown file into each matching sprint folder.
+
+## Caching
+
+Jira GET requests are cached at the transport layer so commands can reuse the same Jira responses.
+
+- cache root: `~/.jira/cache/http/` by default
+- config-aware: the cache follows `JIRA_CONFIG_PATH` / `JIRA_CONFIG_DIR`
+- scope: per Jira base URL and token
+- keying: hashed request URLs for stable, safe filenames
+- refresh: commands that support cache refresh can bypass and repopulate cached GET responses
+- invalidation: mutating Jira operations clear the scoped GET cache
 
 ## Project structure
 
