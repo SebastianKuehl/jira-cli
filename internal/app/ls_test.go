@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bufio"
 	"bytes"
 	"io"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/sebastian/jira-cli/internal/config"
+	"github.com/sebastian/jira-cli/internal/jira"
 )
 
 func TestLsCmdRunPrintsSprintHeaderBeforeTickets(t *testing.T) {
@@ -57,6 +59,40 @@ func TestLsCmdRunPrintsSprintHeaderBeforeTickets(t *testing.T) {
 	}
 	if lines[1] != "PROJ-1 Implement ls" {
 		t.Fatalf("expected ticket line second, got %q", lines[1])
+	}
+}
+
+func TestResolveSprintSelectionPromptsForAmbiguousNumericFragment(t *testing.T) {
+	sprints := []jira.Sprint{
+		{ID: 23, Name: "Sprint 20 Alpha"},
+		{ID: 24, Name: "Sprint 20 Beta"},
+	}
+
+	var out bytes.Buffer
+	selected, err := resolveSprintSelection(sprints, "20", bufio.NewReader(strings.NewReader("beta\n1\n")), &out, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected == nil || selected.ID != 24 {
+		t.Fatalf("expected Sprint 20 Beta, got %#v", selected)
+	}
+	if !strings.Contains(out.String(), `Sprint "20" matches multiple sprints:`) {
+		t.Fatalf("expected ambiguity prompt, got %q", out.String())
+	}
+}
+
+func TestResolveSprintSelectionReturnsAmbiguityWhenNonInteractive(t *testing.T) {
+	sprints := []jira.Sprint{
+		{ID: 23, Name: "Sprint 20 Alpha"},
+		{ID: 24, Name: "Sprint 20 Beta"},
+	}
+
+	selected, err := resolveSprintSelection(sprints, "20", bufio.NewReader(strings.NewReader("")), &bytes.Buffer{}, false)
+	if err == nil {
+		t.Fatalf("expected ambiguity error, got %#v", selected)
+	}
+	if !strings.Contains(err.Error(), `sprint "20" is ambiguous`) {
+		t.Fatalf("expected ambiguity error, got %v", err)
 	}
 }
 

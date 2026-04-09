@@ -706,6 +706,92 @@ func findSprint(sprints []jira.Sprint, input string) (*jira.Sprint, error) {
 	return selected, nil
 }
 
+func resolveSprintSelection(sprints []jira.Sprint, input string, reader *bufio.Reader, out io.Writer, interactive bool) (*jira.Sprint, error) {
+	selected, err := findSprint(sprints, input)
+	if err == nil || !interactive {
+		return selected, err
+	}
+	trimmed := strings.TrimSpace(input)
+	if trimmed == "" || !strings.Contains(err.Error(), "ambiguous") {
+		return nil, err
+	}
+	matches := findNumericSprintMatches(sprints, trimmed)
+	if len(matches) <= 1 {
+		return nil, err
+	}
+	return pickSprintMatch(matches, reader, out, trimmed)
+}
+
+func findNumericSprintMatches(sprints []jira.Sprint, input string) []jira.Sprint {
+	trimmed := strings.TrimSpace(input)
+	if trimmed == "" || !isDigits(trimmed) {
+		return nil
+	}
+	matches := make([]jira.Sprint, 0, 1)
+	for i := range sprints {
+		for _, part := range sprintNumberPattern.FindAllString(sprints[i].Name, -1) {
+			if part == trimmed {
+				matches = append(matches, sprints[i])
+				break
+			}
+		}
+	}
+	return matches
+}
+
+func pickSprintMatch(matches []jira.Sprint, reader *bufio.Reader, out io.Writer, target string) (*jira.Sprint, error) {
+	filtered := matches
+	query := ""
+	for {
+		if query != "" {
+			filtered = filterSprintMatches(matches, query)
+			if len(filtered) == 0 {
+				fmt.Fprintf(out, "  (no sprint matches for %q)\n", query)
+				query = ""
+				filtered = matches
+				continue
+			}
+		}
+		fmt.Fprintf(out, "Sprint %q matches multiple sprints:\n", strings.TrimSpace(target))
+		for i, sprint := range filtered {
+			fmt.Fprintf(out, "  %d) %s (%d)\n", i+1, sprint.Name, sprint.ID)
+		}
+		fmt.Fprint(out, "Enter number to select, or type a search term to filter (empty to cancel): ")
+		raw, err := reader.ReadString('\n')
+		if err != nil {
+			return nil, err
+		}
+		input := strings.TrimSpace(raw)
+		if input == "" {
+			return nil, errors.New("selection cancelled")
+		}
+		if n, err := strconv.Atoi(input); err == nil {
+			if n < 1 || n > len(filtered) {
+				fmt.Fprintf(out, "  (invalid number, valid range is 1-%d)\n", len(filtered))
+				continue
+			}
+			return &filtered[n-1], nil
+		}
+		query = input
+	}
+}
+
+func filterSprintMatches(matches []jira.Sprint, query string) []jira.Sprint {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return matches
+	}
+	lowerQuery := strings.ToLower(query)
+	normalizedQuery := normalizeSprintLookup(query)
+	filtered := make([]jira.Sprint, 0, len(matches))
+	for _, sprint := range matches {
+		if strings.Contains(strings.ToLower(sprint.Name), lowerQuery) || (normalizedQuery != "" && strings.Contains(normalizeSprintLookup(sprint.Name), normalizedQuery)) {
+			filtered = append(filtered, sprint)
+		}
+	}
+	return filtered
+}
+
 func isDigits(value string) bool {
 	for _, r := range value {
 		if r < '0' || r > '9' {
@@ -1126,7 +1212,7 @@ func (c *LsCmd) Run(ctx *Context) error {
 		}
 		return nil
 	}
-	selected, err := findSprint(sprints, c.Sprint)
+	selected, err := resolveSprintSelection(sprints, c.Sprint, bufio.NewReader(os.Stdin), os.Stdout, stdinIsTerminal())
 	if err != nil {
 		return err
 	}
