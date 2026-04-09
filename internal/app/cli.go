@@ -599,7 +599,7 @@ func filterSprintsByYear(sprints []jira.Sprint, year int) []jira.Sprint {
 }
 
 func sprintMatchesYear(sprint jira.Sprint, year int) bool {
-	for _, value := range []time.Time{sprint.StartDate, sprint.EndDate, sprint.CompleteDate, sprint.CreatedDate} {
+	for _, value := range []time.Time{sprint.StartDate, sprint.EndDate, sprint.CompleteDate} {
 		if !value.IsZero() && value.Year() == year {
 			return true
 		}
