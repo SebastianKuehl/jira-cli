@@ -114,7 +114,7 @@ func TestFetchCmdRunFetchesTicketIntoMatchingSprint(t *testing.T) {
 		},
 	}}
 
-	cmd := &FetchCmd{Ticket: "PROJ-2"}
+	cmd := &FetchCmd{Target: "PROJ-2"}
 	if err := cmd.Run(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -126,6 +126,139 @@ func TestFetchCmdRunFetchesTicketIntoMatchingSprint(t *testing.T) {
 	}
 	if !strings.Contains(string(body), "Specific ticket body") {
 		t.Fatalf("expected fetched ticket body, got:\n%s", string(body))
+	}
+}
+
+func TestFetchCmdRunFetchesLowercaseTicketTarget(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/rest/agile/1.0/board":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"isLast":true,"values":[{"id":17,"name":"Backend Board"}]}`))
+		case r.URL.Path == "/rest/agile/1.0/board/17/sprint":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"isLast":true,"values":[{"id":24,"name":"Sprint B"}]}`))
+		case r.URL.Path == "/rest/agile/1.0/board/17/sprint/24/issue":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"total":1,"issues":[{"key":"PROJ-2","fields":{"summary":"Fix fetch","status":{"name":"Todo"}}}]}`))
+		case r.URL.Path == "/rest/api/2/issue/PROJ-2":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"key":"PROJ-2","fields":{"summary":"Fix fetch","description":"Specific ticket body","labels":[],"status":{"name":"Todo"}}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	ctx := &Context{CLI: &CLI{
+		BaseURL: server.URL,
+		Token:   "token",
+		Cfg: config.Config{
+			Project:  "PROJ",
+			BasePath: root,
+			BoardID:  17,
+			BoardByProject: map[string]int{
+				"PROJ": 17,
+			},
+		},
+	}}
+
+	cmd := &FetchCmd{Target: "proj-2"}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "Sprint B", "PROJ-2.md")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFetchCmdRunFetchesSprintByPositionalTarget(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/rest/agile/1.0/board":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"isLast":true,"values":[{"id":17,"name":"Backend Board"}]}`))
+		case r.URL.Path == "/rest/agile/1.0/board/17/sprint":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"isLast":true,"values":[{"id":23,"name":"Sprint A"},{"id":24,"name":"Sprint B"}]}`))
+		case r.URL.Path == "/rest/agile/1.0/board/17/sprint/23/issue":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"total":1,"issues":[{"key":"PROJ-5","fields":{"summary":"Sprint specific","status":{"name":"Todo"}}}]}`))
+		case r.URL.Path == "/rest/agile/1.0/board/17/sprint/24/issue":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"total":1,"issues":[{"key":"PROJ-6","fields":{"summary":"Wrong sprint","status":{"name":"Todo"}}}]}`))
+		case r.URL.Path == "/rest/api/2/issue/PROJ-5":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"key":"PROJ-5","fields":{"summary":"Sprint specific","description":"Only sprint A","labels":[],"status":{"name":"Todo"}}}`))
+		case r.URL.Path == "/rest/api/2/issue/PROJ-6":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"key":"PROJ-6","fields":{"summary":"Wrong sprint","description":"Should not be fetched","labels":[],"status":{"name":"Todo"}}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	ctx := &Context{CLI: &CLI{
+		BaseURL: server.URL,
+		Token:   "token",
+		Cfg: config.Config{
+			Project:  "PROJ",
+			BasePath: root,
+			BoardID:  17,
+			BoardByProject: map[string]int{
+				"PROJ": 17,
+			},
+		},
+	}}
+
+	cmd := &FetchCmd{Target: "Sprint A"}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(filepath.Join(root, "Sprint A", "PROJ-5.md")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "Sprint B", "PROJ-6.md")); !os.IsNotExist(err) {
+		t.Fatalf("expected Sprint B ticket to remain unfetched, stat err=%v", err)
+	}
+}
+
+func TestFetchCmdRunRejectsAmbiguousPositionalTarget(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/rest/agile/1.0/board":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"isLast":true,"values":[{"id":17,"name":"Backend Board"}]}`))
+		case r.URL.Path == "/rest/agile/1.0/board/17/sprint":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"isLast":true,"values":[{"id":23,"name":"PROJ-7"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	ctx := &Context{CLI: &CLI{
+		BaseURL: server.URL,
+		Token:   "token",
+		Cfg: config.Config{
+			Project:  "PROJ",
+			BasePath: root,
+			BoardID:  17,
+			BoardByProject: map[string]int{
+				"PROJ": 17,
+			},
+		},
+	}}
+
+	err := (&FetchCmd{Target: "PROJ-7"}).Run(ctx)
+	if err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("expected ambiguity error, got %v", err)
 	}
 }
 

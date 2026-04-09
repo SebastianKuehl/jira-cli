@@ -323,7 +323,7 @@ type RmTicketCmd struct {
 }
 
 func (c *RmTicketCmd) Run(ctx *Context) error {
-	id := strings.TrimSpace(c.ID)
+	id := strings.ToUpper(strings.TrimSpace(c.ID))
 	if !isTicketID(id) {
 		return fmt.Errorf("invalid ticket id %q", c.ID)
 	}
@@ -372,7 +372,7 @@ func (c *RmTicketCmd) Run(ctx *Context) error {
 var ticketIDPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]+-[0-9]+$`)
 
 func isTicketID(id string) bool {
-	return ticketIDPattern.MatchString(strings.TrimSpace(id))
+	return ticketIDPattern.MatchString(strings.ToUpper(strings.TrimSpace(id)))
 }
 
 func expandPath(p string) (string, error) {
@@ -398,13 +398,14 @@ func stdinIsTerminal() bool {
 }
 
 type FetchCmd struct {
-	Sprint string `arg:"" optional:"" help:"Sprint name to fetch."`
-	Ticket string `name:"ticket" help:"Fetch one ticket by ID."`
+	Target string `arg:"" optional:"" help:"Sprint name or ticket ID to fetch."`
+	Ticket string `name:"ticket" help:"Explicitly fetch one ticket by ID."`
+	Sprint string `name:"sprint" help:"Explicitly fetch one sprint by name or ID."`
 }
 
 func (c *FetchCmd) Run(ctx *Context) error {
-	if strings.TrimSpace(c.Sprint) != "" && strings.TrimSpace(c.Ticket) != "" {
-		return errors.New("provide either a sprint argument or --ticket, not both")
+	if selectedFetchModes(c) > 1 {
+		return errors.New("provide only one of positional target, --ticket, or --sprint")
 	}
 	basePath, err := ctx.ProjectPath()
 	if err != nil {
@@ -428,22 +429,58 @@ func (c *FetchCmd) Run(ctx *Context) error {
 	}
 
 	if ticketID := strings.TrimSpace(c.Ticket); ticketID != "" {
-		sprint, err := findSprintContainingTicket(context.Background(), client, boardID, sprints, ticketID)
-		if err != nil {
-			return err
-		}
-		ticket, err := client.GetTicket(context.Background(), ticketID)
-		if err != nil {
-			return err
-		}
-		if err := writeFetchedTicket(basePath, *sprint, ticket); err != nil {
-			return err
-		}
-		fmt.Printf("fetched %s into %s\n", ticket.ID, sprintFolderName(*sprint))
-		return nil
+		return c.fetchTicket(basePath, client, boardID, sprints, ticketID)
+	}
+	if sprintTarget := strings.TrimSpace(c.Sprint); sprintTarget != "" {
+		return c.fetchSprints(basePath, client, boardID, sprints, sprintTarget)
 	}
 
-	targets, err := selectedSprints(sprints, c.Sprint)
+	target := strings.TrimSpace(c.Target)
+	if target == "" {
+		return c.fetchSprints(basePath, client, boardID, sprints, "")
+	}
+	if sprint := findSprint(sprints, target); sprint != nil && isTicketID(target) {
+		return fmt.Errorf("target %q is ambiguous; use --ticket or --sprint", target)
+	}
+	if isTicketID(target) {
+		return c.fetchTicket(basePath, client, boardID, sprints, target)
+	}
+	return c.fetchSprints(basePath, client, boardID, sprints, target)
+}
+
+func selectedFetchModes(c *FetchCmd) int {
+	count := 0
+	if strings.TrimSpace(c.Target) != "" {
+		count++
+	}
+	if strings.TrimSpace(c.Ticket) != "" {
+		count++
+	}
+	if strings.TrimSpace(c.Sprint) != "" {
+		count++
+	}
+	return count
+}
+
+func (c *FetchCmd) fetchTicket(basePath string, client *jira.Client, boardID int, sprints []jira.Sprint, ticketID string) error {
+	ticketID = strings.ToUpper(strings.TrimSpace(ticketID))
+	sprint, err := findSprintContainingTicket(context.Background(), client, boardID, sprints, ticketID)
+	if err != nil {
+		return err
+	}
+	ticket, err := client.GetTicket(context.Background(), ticketID)
+	if err != nil {
+		return err
+	}
+	if err := writeFetchedTicket(basePath, *sprint, ticket); err != nil {
+		return err
+	}
+	fmt.Printf("fetched %s into %s\n", ticket.ID, sprintFolderName(*sprint))
+	return nil
+}
+
+func (c *FetchCmd) fetchSprints(basePath string, client *jira.Client, boardID int, sprints []jira.Sprint, target string) error {
+	targets, err := selectedSprints(sprints, target)
 	if err != nil {
 		return err
 	}
@@ -472,14 +509,21 @@ func (c *FetchCmd) Run(ctx *Context) error {
 	return nil
 }
 
+func findSprint(sprints []jira.Sprint, query string) *jira.Sprint {
+	for i := range sprints {
+		if strings.EqualFold(sprints[i].Name, query) || strconv.Itoa(sprints[i].ID) == query {
+			return &sprints[i]
+		}
+	}
+	return nil
+}
+
 func selectedSprints(sprints []jira.Sprint, query string) ([]jira.Sprint, error) {
 	if strings.TrimSpace(query) == "" {
 		return sprints, nil
 	}
-	for _, sprint := range sprints {
-		if strings.EqualFold(sprint.Name, query) || strconv.Itoa(sprint.ID) == query {
-			return []jira.Sprint{sprint}, nil
-		}
+	if sprint := findSprint(sprints, query); sprint != nil {
+		return []jira.Sprint{*sprint}, nil
 	}
 	return nil, fmt.Errorf("sprint %q not found", query)
 }

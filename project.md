@@ -41,8 +41,7 @@ jira rm config # removes the config
 jira rm sprint [sprint] # removes the local sprint folder and all of its local markdown tickets
 jira rm ticket [id] # removes the local markdown file for id
 jira fetch # fetches all jira tickets and groups them by sprint
-jira fetch [sprint] # fetches all jira tickets for the specified sprint
-jira fetch --ticket [id] # fetches the specified ticket and places it in the corresponding sprint folder
+jira fetch [sprint|id] # fetches all jira tickets for the specified sprint or a specific ticket and places that in the corresponding folder
 jira ls # lists all sprints
 jira ls [sprint] [--verbose|-v] # lists all tickets of sprint [sprint]
 jira cat [sprint|id] # outputs the sprint's goal OR stdouts the ticket properties and body to console
