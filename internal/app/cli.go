@@ -554,8 +554,68 @@ type AssignCmd struct {
 }
 
 func (c *AssignCmd) Run(ctx *Context) error {
-	_ = ctx
-	return jira.ErrNotImplemented
+	client, err := ctx.JiraClient()
+	if err != nil {
+		return err
+	}
+
+	var user jira.User
+	if c.User == "" {
+		user, err = client.GetCurrentUser(context.Background())
+		if err != nil {
+			return fmt.Errorf("could not resolve current user: %w", err)
+		}
+	} else {
+		users, err := client.SearchUsers(context.Background(), c.User)
+		if err != nil {
+			return fmt.Errorf("user search failed: %w", err)
+		}
+		if len(users) == 0 {
+			return fmt.Errorf("no users found matching %q", c.User)
+		}
+		if len(users) == 1 {
+			user = users[0]
+		} else {
+			// Try to find an exact match before prompting.
+			var exact []jira.User
+			q := strings.ToLower(c.User)
+			for _, u := range users {
+				if strings.ToLower(u.Name) == q ||
+					strings.ToLower(u.EmailAddr) == q ||
+					strings.ToLower(u.DisplayName) == q {
+					exact = append(exact, u)
+				}
+			}
+			if len(exact) == 1 {
+				user = exact[0]
+			} else {
+				if !stdinIsTerminal() {
+					return fmt.Errorf("multiple users found matching %q; run interactively to select one", c.User)
+				}
+				fmt.Printf("Multiple users found for %q:\n", c.User)
+				for i, u := range users {
+					fmt.Printf("  %d) %s (%s)\n", i+1, u.DisplayName, u.EmailAddr)
+				}
+				reader := bufio.NewReader(os.Stdin)
+				fmt.Print("Select user number: ")
+				raw, err := reader.ReadString('\n')
+				if err != nil {
+					return err
+				}
+				selected, err := strconv.Atoi(strings.TrimSpace(raw))
+				if err != nil || selected < 1 || selected > len(users) {
+					return errors.New("invalid user selection")
+				}
+				user = users[selected-1]
+			}
+		}
+	}
+
+	if err := client.AssignTicket(context.Background(), c.ID, &user); err != nil {
+		return err
+	}
+	fmt.Printf("Assigned %s to %s\n", c.ID, user.DisplayName)
+	return nil
 }
 
 type UnassignCmd struct {
@@ -563,6 +623,13 @@ type UnassignCmd struct {
 }
 
 func (c *UnassignCmd) Run(ctx *Context) error {
-	_ = ctx
-	return jira.ErrNotImplemented
+	client, err := ctx.JiraClient()
+	if err != nil {
+		return err
+	}
+	if err := client.AssignTicket(context.Background(), c.ID, nil); err != nil {
+		return err
+	}
+	fmt.Printf("Unassigned %s\n", c.ID)
+	return nil
 }

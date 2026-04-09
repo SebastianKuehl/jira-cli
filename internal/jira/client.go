@@ -1,6 +1,7 @@
 package jira
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -43,6 +44,13 @@ type IssueTicket struct {
 	Reporter string
 	State    string
 	PRLink   string
+}
+
+type User struct {
+	Name        string `json:"name"`
+	AccountID   string `json:"accountId"`
+	DisplayName string `json:"displayName"`
+	EmailAddr   string `json:"emailAddress"`
 }
 
 func NewClient(baseURL, token string) *Client {
@@ -277,4 +285,92 @@ func (c *Client) ListSprintTickets(ctx context.Context, boardID, sprintID int) (
 		}
 	}
 	return out, nil
+}
+
+func (c *Client) GetCurrentUser(ctx context.Context) (User, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/rest/api/2/myself", nil)
+	if err != nil {
+		return User{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	req.Header.Set("Accept", "application/json")
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return User{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return User{}, fmt.Errorf("get current user failed with status %s", resp.Status)
+	}
+	var u User
+	if err := json.NewDecoder(resp.Body).Decode(&u); err != nil {
+		return User{}, err
+	}
+	return u, nil
+}
+
+func (c *Client) SearchUsers(ctx context.Context, query string) ([]User, error) {
+	u, err := url.Parse(c.BaseURL + "/rest/api/2/user/search")
+	if err != nil {
+		return nil, err
+	}
+	q := u.Query()
+	q.Set("query", query)
+	q.Set("maxResults", "20")
+	u.RawQuery = q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	req.Header.Set("Accept", "application/json")
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("user search failed with status %s", resp.Status)
+	}
+	var users []User
+	if err := json.NewDecoder(resp.Body).Decode(&users); err != nil {
+		return nil, err
+	}
+	return users, nil
+}
+
+// AssignTicket assigns a Jira issue to the given user. Pass an empty user to unassign.
+func (c *Client) AssignTicket(ctx context.Context, issueKey string, user *User) error {
+	var body []byte
+	var err error
+	if user == nil {
+		body, err = json.Marshal(map[string]interface{}{"name": nil})
+	} else if user.AccountID != "" {
+		body, err = json.Marshal(map[string]string{"accountId": user.AccountID})
+	} else {
+		body, err = json.Marshal(map[string]string{"name": user.Name})
+	}
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut,
+		fmt.Sprintf("%s/rest/api/2/issue/%s/assignee", c.BaseURL, issueKey),
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("assign ticket failed with status %s", resp.Status)
+	}
+	return nil
 }
