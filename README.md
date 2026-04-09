@@ -17,3 +17,12 @@ go mod tidy
 go build ./...
 go test ./...
 ```
+
+## Install locally
+
+- macOS/Linux: `./scripts/install.sh`
+- Windows (PowerShell): `.\scripts\install.ps1`
+
+Optional install target directory:
+- macOS/Linux: set `JIRA_INSTALL_DIR`
+- Windows: pass `-InstallDir "C:\path\to\bin"`
