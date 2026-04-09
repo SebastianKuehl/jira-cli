@@ -15,7 +15,6 @@ import (
 	"github.com/sebastian/jira-cli/internal/config"
 	"github.com/sebastian/jira-cli/internal/env"
 	"github.com/sebastian/jira-cli/internal/jira"
-	"github.com/sebastian/jira-cli/internal/tickets"
 )
 
 type App struct {
@@ -536,29 +535,21 @@ type CatCmd struct {
 }
 
 func (c *CatCmd) Run(ctx *Context) error {
-	projectPath, err := ctx.ProjectPath()
+	client, err := ctx.JiraClient()
 	if err != nil {
 		return err
 	}
 
 	if isTicketID(c.Target) {
-		path, err := tickets.FindTicketFile(projectPath, c.Target)
+		ticket, err := client.GetTicket(context.Background(), c.Target)
 		if err != nil {
 			return err
 		}
-		content, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		fmt.Print(string(content))
+		printTicket(ticket)
 		return nil
 	}
 
 	// Treat target as a sprint name — fetch the sprint goal from Jira.
-	client, err := ctx.JiraClient()
-	if err != nil {
-		return err
-	}
 	projectKey, err := ensureProject(ctx, client)
 	if err != nil {
 		return err
@@ -582,6 +573,27 @@ func (c *CatCmd) Run(ctx *Context) error {
 		}
 	}
 	return fmt.Errorf("sprint %q not found", c.Target)
+}
+
+func printTicket(t jira.IssueTicket) {
+	fmt.Printf("id:       %s\n", t.ID)
+	fmt.Printf("title:    %s\n", t.Title)
+	fmt.Printf("state:    %s\n", emptyFallback(t.State))
+	fmt.Printf("assignee: %s\n", emptyFallback(t.Assignee))
+	fmt.Printf("reporter: %s\n", emptyFallback(t.Reporter))
+	if t.Priority != "" {
+		fmt.Printf("priority: %s\n", t.Priority)
+	}
+	if len(t.Labels) > 0 {
+		fmt.Printf("labels:   %s\n", strings.Join(t.Labels, ", "))
+	}
+	if t.URL != "" {
+		fmt.Printf("url:      %s\n", t.URL)
+	}
+	if strings.TrimSpace(t.Description) != "" {
+		fmt.Println()
+		fmt.Println(t.Description)
+	}
 }
 
 // isTicketID returns true when s looks like a Jira ticket key (e.g. PROJ-123 or proj-123).
