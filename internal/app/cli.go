@@ -442,6 +442,14 @@ func (c *MoveCmd) Run(ctx *Context) error {
 	if err != nil {
 		return err
 	}
+	ticket, err := client.GetTicket(context.Background(), c.ID)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Ticket:   %s\n", ticket.ID)
+	fmt.Printf("State:    %s\n", emptyFallback(ticket.State))
+	fmt.Printf("Assignee: %s\n\n", emptyFallback(ticket.Assignee))
+
 	transitions, err := client.GetTransitions(context.Background(), c.ID)
 	if err != nil {
 		return err
