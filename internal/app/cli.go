@@ -758,36 +758,28 @@ func findSprint(sprints []jira.Sprint, input string) (*jira.Sprint, error) {
 }
 
 func resolveSprintSelection(sprints []jira.Sprint, input string, reader *bufio.Reader, out io.Writer, interactive bool) (*jira.Sprint, error) {
-	selected, err := findSprint(sprints, input)
-	if err == nil || !interactive {
-		return selected, err
-	}
 	trimmed := strings.TrimSpace(input)
-	if trimmed == "" || !strings.Contains(err.Error(), "ambiguous") {
-		return nil, err
+	if trimmed == "" {
+		return nil, nil
 	}
-	matches := findNumericSprintMatches(sprints, trimmed)
-	if len(matches) <= 1 {
-		return nil, err
+	if selected := findExactSprint(sprints, trimmed); selected != nil {
+		return selected, nil
+	}
+	matches := findApproximateSprints(sprints, trimmed)
+	switch len(matches) {
+	case 0:
+		return nil, nil
+	case 1:
+		return &matches[0], nil
+	}
+	if !interactive {
+		names := make([]string, 0, len(matches))
+		for _, sprint := range matches {
+			names = append(names, sprint.Name)
+		}
+		return nil, fmt.Errorf("sprint %q is ambiguous; matches: %s", trimmed, strings.Join(names, ", "))
 	}
 	return pickSprintMatch(matches, reader, out, trimmed)
-}
-
-func findNumericSprintMatches(sprints []jira.Sprint, input string) []jira.Sprint {
-	trimmed := strings.TrimSpace(input)
-	if trimmed == "" || !isDigits(trimmed) {
-		return nil
-	}
-	matches := make([]jira.Sprint, 0, 1)
-	for i := range sprints {
-		for _, part := range sprintNumberPattern.FindAllString(sprints[i].Name, -1) {
-			if part == trimmed {
-				matches = append(matches, sprints[i])
-				break
-			}
-		}
-	}
-	return matches
 }
 
 func pickSprintMatch(matches []jira.Sprint, reader *bufio.Reader, out io.Writer, target string) (*jira.Sprint, error) {

@@ -64,17 +64,18 @@ func TestLsCmdRunPrintsSprintHeaderBeforeTickets(t *testing.T) {
 
 func TestResolveSprintSelectionPromptsForAmbiguousNumericFragment(t *testing.T) {
 	sprints := []jira.Sprint{
-		{ID: 23, Name: "Sprint 20 Alpha"},
-		{ID: 24, Name: "Sprint 20 Beta"},
+		{ID: 23, Name: "Sprint 120 Alpha"},
+		{ID: 24, Name: "Sprint 201 Beta"},
+		{ID: 25, Name: "Sprint 120.1 Gamma"},
 	}
 
 	var out bytes.Buffer
-	selected, err := resolveSprintSelection(sprints, "20", bufio.NewReader(strings.NewReader("beta\n1\n")), &out, true)
+	selected, err := resolveSprintSelection(sprints, "20", bufio.NewReader(strings.NewReader("gamma\n1\n")), &out, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if selected == nil || selected.ID != 24 {
-		t.Fatalf("expected Sprint 20 Beta, got %#v", selected)
+	if selected == nil || selected.ID != 25 {
+		t.Fatalf("expected Sprint 120.1 Gamma, got %#v", selected)
 	}
 	if !strings.Contains(out.String(), `Sprint "20" matches multiple sprints:`) {
 		t.Fatalf("expected ambiguity prompt, got %q", out.String())
@@ -83,8 +84,8 @@ func TestResolveSprintSelectionPromptsForAmbiguousNumericFragment(t *testing.T) 
 
 func TestResolveSprintSelectionReturnsAmbiguityWhenNonInteractive(t *testing.T) {
 	sprints := []jira.Sprint{
-		{ID: 23, Name: "Sprint 20 Alpha"},
-		{ID: 24, Name: "Sprint 20 Beta"},
+		{ID: 23, Name: "Sprint 120 Alpha"},
+		{ID: 24, Name: "Sprint 201 Beta"},
 	}
 
 	selected, err := resolveSprintSelection(sprints, "20", bufio.NewReader(strings.NewReader("")), &bytes.Buffer{}, false)
@@ -93,6 +94,21 @@ func TestResolveSprintSelectionReturnsAmbiguityWhenNonInteractive(t *testing.T) 
 	}
 	if !strings.Contains(err.Error(), `sprint "20" is ambiguous`) {
 		t.Fatalf("expected ambiguity error, got %v", err)
+	}
+}
+
+func TestResolveSprintSelectionFindsSingleApproximateSprint(t *testing.T) {
+	sprints := []jira.Sprint{
+		{ID: 23, Name: "Sprint 120 Alpha"},
+		{ID: 24, Name: "Sprint 301 Beta"},
+	}
+
+	selected, err := resolveSprintSelection(sprints, "20", bufio.NewReader(strings.NewReader("")), &bytes.Buffer{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected == nil || selected.ID != 23 {
+		t.Fatalf("expected Sprint 120 Alpha, got %#v", selected)
 	}
 }
 
