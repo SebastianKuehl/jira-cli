@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -268,7 +269,7 @@ type RmConfigCmd struct{}
 
 func (c *RmConfigCmd) Run(ctx *Context) error {
 	_ = ctx
-	return jira.ErrNotImplemented
+	return config.Remove()
 }
 
 type RmSprintCmd struct {
@@ -276,8 +277,45 @@ type RmSprintCmd struct {
 }
 
 func (c *RmSprintCmd) Run(ctx *Context) error {
-	_ = ctx
-	return jira.ErrNotImplemented
+	if strings.TrimSpace(c.Sprint) == "" || c.Sprint == "." {
+		return fmt.Errorf("invalid sprint %q", c.Sprint)
+	}
+	basePath, err := ctx.ProjectPath()
+	if err != nil {
+		return err
+	}
+	baseAbs, err := filepath.Abs(basePath)
+	if err != nil {
+		return err
+	}
+	baseResolved, err := filepath.EvalSymlinks(baseAbs)
+	if err != nil {
+		return err
+	}
+	target := filepath.Join(baseAbs, c.Sprint)
+	absTarget, err := filepath.Abs(target)
+	if err != nil {
+		return err
+	}
+	targetResolved, err := filepath.EvalSymlinks(absTarget)
+	if err != nil {
+		return err
+	}
+	rel, err := filepath.Rel(baseResolved, targetResolved)
+	if err != nil {
+		return err
+	}
+	if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("invalid sprint path %q", c.Sprint)
+	}
+	info, err := os.Stat(targetResolved)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("sprint %q is not a directory", c.Sprint)
+	}
+	return os.RemoveAll(targetResolved)
 }
 
 type RmTicketCmd struct {
@@ -285,8 +323,56 @@ type RmTicketCmd struct {
 }
 
 func (c *RmTicketCmd) Run(ctx *Context) error {
-	_ = ctx
-	return jira.ErrNotImplemented
+	id := strings.TrimSpace(c.ID)
+	if !isTicketID(id) {
+		return fmt.Errorf("invalid ticket id %q", c.ID)
+	}
+	basePath, err := ctx.ProjectPath()
+	if err != nil {
+		return err
+	}
+	wantNames := map[string]struct{}{
+		id:         {},
+		id + ".md": {},
+	}
+	found := make([]string, 0)
+	err = filepath.WalkDir(basePath, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(basePath, path)
+		if err != nil {
+			return err
+		}
+		if strings.Count(rel, string(filepath.Separator)) < 1 {
+			return nil
+		}
+		if _, ok := wantNames[d.Name()]; ok {
+			found = append(found, path)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if len(found) == 0 {
+		return fmt.Errorf("ticket %q not found", id)
+	}
+	for _, f := range found {
+		if err := os.Remove(f); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+var ticketIDPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]+-[0-9]+$`)
+
+func isTicketID(id string) bool {
+	return ticketIDPattern.MatchString(strings.TrimSpace(id))
 }
 
 func expandPath(p string) (string, error) {
