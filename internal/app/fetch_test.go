@@ -227,6 +227,71 @@ func TestFetchCmdRunFetchesSprintByPositionalTarget(t *testing.T) {
 	}
 }
 
+func TestFetchCmdRunApproximatesSprintTarget(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/rest/agile/1.0/board":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"isLast":true,"values":[{"id":17,"name":"Backend Board"}]}`))
+		case r.URL.Path == "/rest/agile/1.0/board/17/sprint":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"isLast":true,"values":[{"id":201,"name":"E51(S4).DevS201"},{"id":202,"name":"E51(S4).DevS202"}]}`))
+		case r.URL.Path == "/rest/agile/1.0/board/17/sprint/201/issue":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"total":1,"issues":[{"key":"PROJ-201","fields":{"summary":"Approx sprint","status":{"name":"Todo"}}}]}`))
+		case r.URL.Path == "/rest/agile/1.0/board/17/sprint/202/issue":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"total":1,"issues":[{"key":"PROJ-202","fields":{"summary":"Wrong sprint","status":{"name":"Todo"}}}]}`))
+		case r.URL.Path == "/rest/api/2/issue/PROJ-201":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"key":"PROJ-201","fields":{"summary":"Approx sprint","description":"Matched via 201","labels":[],"status":{"name":"Todo"}}}`))
+		case r.URL.Path == "/rest/api/2/issue/PROJ-202":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"key":"PROJ-202","fields":{"summary":"Wrong sprint","description":"Should not be fetched","labels":[],"status":{"name":"Todo"}}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	ctx := &Context{CLI: &CLI{
+		BaseURL: server.URL,
+		Token:   "token",
+		Cfg: config.Config{
+			Project:  "PROJ",
+			BasePath: root,
+			BoardID:  17,
+			BoardByProject: map[string]int{
+				"PROJ": 17,
+			},
+		},
+	}}
+
+	cmd := &FetchCmd{Target: "201"}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(filepath.Join(root, "E51(S4).DevS201", "PROJ-201.md")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "E51(S4).DevS202", "PROJ-202.md")); !os.IsNotExist(err) {
+		t.Fatalf("expected approximate match to stay on the 201 sprint, stat err=%v", err)
+	}
+}
+
+func TestSelectedSprintsRejectsAmbiguousApproximation(t *testing.T) {
+	sprints := []jira.Sprint{
+		{ID: 201, Name: "E51(S4).DevS201"},
+		{ID: 202, Name: "E51(S4).DevS202"},
+	}
+	_, err := selectedSprints(sprints, "devs20")
+	if err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("expected ambiguous approximation error, got %v", err)
+	}
+}
+
 func TestFetchCmdRunRejectsAmbiguousPositionalTarget(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {

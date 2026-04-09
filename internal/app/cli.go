@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/alecthomas/kong"
 
@@ -525,7 +526,49 @@ func selectedSprints(sprints []jira.Sprint, query string) ([]jira.Sprint, error)
 	if sprint := findSprint(sprints, query); sprint != nil {
 		return []jira.Sprint{*sprint}, nil
 	}
+	if matches := findApproximateSprints(sprints, query); len(matches) == 1 {
+		return []jira.Sprint{matches[0]}, nil
+	} else if len(matches) > 1 {
+		names := make([]string, 0, len(matches))
+		for _, sprint := range matches {
+			names = append(names, sprint.Name)
+		}
+		return nil, fmt.Errorf("sprint %q is ambiguous; matches: %s", query, strings.Join(names, ", "))
+	}
 	return nil, fmt.Errorf("sprint %q not found", query)
+}
+
+func findApproximateSprints(sprints []jira.Sprint, query string) []jira.Sprint {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil
+	}
+	lowerQuery := strings.ToLower(query)
+	normalizedQuery := normalizeSprintLookup(query)
+	matches := make([]jira.Sprint, 0)
+	seen := make(map[int]struct{})
+	for _, sprint := range sprints {
+		nameLower := strings.ToLower(sprint.Name)
+		normalizedName := normalizeSprintLookup(sprint.Name)
+		if strings.Contains(nameLower, lowerQuery) || (normalizedQuery != "" && strings.Contains(normalizedName, normalizedQuery)) {
+			if _, ok := seen[sprint.ID]; ok {
+				continue
+			}
+			seen[sprint.ID] = struct{}{}
+			matches = append(matches, sprint)
+		}
+	}
+	return matches
+}
+
+func normalizeSprintLookup(value string) string {
+	var b strings.Builder
+	for _, r := range value {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(unicode.ToLower(r))
+		}
+	}
+	return b.String()
 }
 
 func findSprintContainingTicket(ctx context.Context, client *jira.Client, boardID int, sprints []jira.Sprint, ticketID string) (*jira.Sprint, error) {
