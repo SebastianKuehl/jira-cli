@@ -117,33 +117,9 @@ func (t *TestCmd) Run(ctx *Context) error {
 	return nil
 }
 
-type ConfigCmd struct {
-	Info bool `name:"info" help:"Print config file path and contents."`
-}
+type ConfigCmd struct{}
 
 func (c *ConfigCmd) Run(ctx *Context) error {
-	if c.Info {
-		path, err := config.Path()
-		if err != nil {
-			return err
-		}
-		fmt.Println("Config file:", path)
-		exists, err := config.Exists()
-		if err != nil {
-			return err
-		}
-		if !exists {
-			fmt.Println("No config file found.")
-			return nil
-		}
-		b, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		fmt.Println(string(b))
-		return nil
-	}
-
 	exists, err := config.Exists()
 	if err != nil {
 		return err
@@ -153,10 +129,28 @@ func (c *ConfigCmd) Run(ctx *Context) error {
 	isInteractive := stdinIsTerminal()
 
 	if exists {
-		if !isInteractive {
-			return errors.New("config already exists; re-run interactively to replace it")
+		path, err := config.Path()
+		if err != nil {
+			return err
 		}
-		fmt.Print("A config already exists. Create a new one? [y/N]: ")
+		fmt.Println("Config file:", path)
+		cfg, loadErr := config.Load()
+		if loadErr != nil {
+			fmt.Println("  (config file exists but could not be read:", loadErr, ")")
+		} else {
+			fmt.Println("  Project:   ", cfg.Project)
+			if cfg.BasePath != "" {
+				fmt.Println("  Base path: ", cfg.BasePath)
+			} else {
+				fmt.Println("  Base path:  (current directory)")
+			}
+		}
+		fmt.Println()
+
+		if !isInteractive {
+			return nil
+		}
+		fmt.Print("Overwrite with a new config? [y/N]: ")
 		answer, err := reader.ReadString('\n')
 		if err != nil {
 			return err

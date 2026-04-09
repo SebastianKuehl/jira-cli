@@ -23,16 +23,19 @@ The user can configure the cli:
 - project base path: an optional directory where folders and files will be written to for the configured project. Without an base path configured folders and files will be written to the command invokation folder
 
 ### Flow
-
-- With no config previously created, the user is prompted for project and project base path
-- With an existing config, the user is prompted yes (y) or no (n) to create a new one which leads to the prior step
+The config
+- does not exist:
+    - prompt the user for project and project base path
+- exists:
+    - print the actual config path
+    - print the actual config content nicely formatted (no json)
+    - prompt yes (y) or no (n) to overwrite the existing config
 
 ## Commands
 ```sh
 jira --help
 jira test # checks if the environment variables can be used to reach the jira tickets
 jira config # select a default project from a list of available projects, set a project base path to write the project jira tickets to
-jira config --info # prints the path to the config file, prints the config's content
 jira rm config # removes the config
 jira rm sprint [sprint] # removes the local sprint folder and all of its local markdown tickets
 jira rm ticket [id] # removes the local markdown file for id
