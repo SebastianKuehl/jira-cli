@@ -158,6 +158,36 @@ func TestResolveSprintSelectionFindsSingleApproximateSprint(t *testing.T) {
 	}
 }
 
+func TestResolveSprintSelectionAcceptsDisplayedSprintFormat(t *testing.T) {
+	sprints := []jira.Sprint{
+		{ID: 23, Name: "Sprint Alpha"},
+		{ID: 24, Name: "Sprint Beta"},
+	}
+
+	selected, err := resolveSprintSelection(sprints, "Sprint Alpha (23)", bufio.NewReader(strings.NewReader("")), &bytes.Buffer{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected == nil || selected.ID != 23 {
+		t.Fatalf("expected Sprint Alpha by displayed format, got %#v", selected)
+	}
+}
+
+func TestResolveSprintSelectionPreservesExactNameWithParenthesizedDigits(t *testing.T) {
+	sprints := []jira.Sprint{
+		{ID: 23, Name: "Release (2024)"},
+		{ID: 2024, Name: "Different Sprint"},
+	}
+
+	selected, err := resolveSprintSelection(sprints, "Release (2024)", bufio.NewReader(strings.NewReader("")), &bytes.Buffer{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected == nil || selected.ID != 23 {
+		t.Fatalf("expected exact sprint-name match to win, got %#v", selected)
+	}
+}
+
 func TestLsCmdRunMarksLocalSprintsInList(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -201,10 +231,10 @@ func TestLsCmdRunMarksLocalSprintsInList(t *testing.T) {
 	if len(lines) != 2 {
 		t.Fatalf("expected two sprint lines, got %q", output)
 	}
-	if lines[0] != "Sprint Alpha ✅ local" {
+	if lines[0] != "Sprint Alpha (23) ✅ local" {
 		t.Fatalf("expected local sprint marker, got %q", lines[0])
 	}
-	if lines[1] != "Sprint Beta" {
+	if lines[1] != "Sprint Beta (24)" {
 		t.Fatalf("expected unmarked remote sprint, got %q", lines[1])
 	}
 }

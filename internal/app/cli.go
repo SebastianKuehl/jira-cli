@@ -731,6 +731,7 @@ func filterSprintRemovalMatches(matches []sprintRemovalMatch, query string) []sp
 
 var ticketIDPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]+-[0-9]+$`)
 var sprintNumberPattern = regexp.MustCompile(`\d+`)
+var sprintDisplayPattern = regexp.MustCompile(`^(.*)\((\d+)\)\s*$`)
 
 func isTicketID(id string) bool {
 	return ticketIDPattern.MatchString(strings.ToUpper(strings.TrimSpace(id)))
@@ -745,6 +746,9 @@ func findSprint(sprints []jira.Sprint, input string) (*jira.Sprint, error) {
 		if strings.EqualFold(sprints[i].Name, trimmed) || strconv.Itoa(sprints[i].ID) == trimmed {
 			return &sprints[i], nil
 		}
+	}
+	if sprint := findDisplayedSprint(sprints, trimmed); sprint != nil {
+		return sprint, nil
 	}
 	if !isDigits(trimmed) {
 		return nil, nil
@@ -1044,8 +1048,22 @@ func resolveFetchSprintSelection(sprints []jira.Sprint, input string, reader *bu
 }
 
 func findExactSprint(sprints []jira.Sprint, query string) *jira.Sprint {
+	query = strings.TrimSpace(query)
 	for i := range sprints {
 		if strings.EqualFold(sprints[i].Name, query) || strconv.Itoa(sprints[i].ID) == query {
+			return &sprints[i]
+		}
+	}
+	return findDisplayedSprint(sprints, query)
+}
+
+func findDisplayedSprint(sprints []jira.Sprint, query string) *jira.Sprint {
+	namePart, idPart, ok := parseSprintDisplay(query)
+	if !ok {
+		return nil
+	}
+	for i := range sprints {
+		if strconv.Itoa(sprints[i].ID) == idPart && strings.EqualFold(strings.TrimSpace(sprints[i].Name), namePart) {
 			return &sprints[i]
 		}
 	}
@@ -1158,6 +1176,14 @@ func normalizeSprintLookup(value string) string {
 		}
 	}
 	return b.String()
+}
+
+func parseSprintDisplay(value string) (string, string, bool) {
+	matches := sprintDisplayPattern.FindStringSubmatch(strings.TrimSpace(value))
+	if len(matches) != 3 {
+		return "", "", false
+	}
+	return strings.TrimSpace(matches[1]), matches[2], true
 }
 
 func findSprintContainingTicket(ctx context.Context, client *jira.Client, boardID int, sprints []jira.Sprint, ticketID string) (*jira.Sprint, error) {
@@ -1633,7 +1659,7 @@ func expectedSprintDir(basePath string, sprint jira.Sprint) (string, error) {
 func renderSprintListOutput(basePath string, sprints []jira.Sprint) string {
 	var b strings.Builder
 	for _, sprint := range sprints {
-		b.WriteString(sprint.Name)
+		fmt.Fprintf(&b, "%s (%d)", sprint.Name, sprint.ID)
 		b.WriteString(localSprintNote(basePath, sprint))
 		b.WriteByte('\n')
 	}
