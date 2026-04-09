@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -260,9 +261,74 @@ func (c *ConfigCmd) Run(ctx *Context) error {
 
 // RmCmd groups removal subcommands.
 type RmCmd struct {
-	Config RmConfigCmd `cmd:"config" help:"Remove the config file."`
-	Sprint RmSprintCmd `cmd:"sprint" help:"Remove a local sprint folder and its tickets."`
-	Ticket RmTicketCmd `cmd:"ticket" help:"Remove a local markdown file for a ticket."`
+	Target string `arg:"" optional:"" help:"Config, sprint name, or ticket ID."`
+	Config bool   `help:"Remove the config file."`
+	Sprint bool   `help:"Treat target as a sprint name."`
+	Ticket bool   `help:"Treat target as a ticket ID."`
+}
+
+func (c *RmCmd) Run(ctx *Context) error {
+	target := strings.TrimSpace(c.Target)
+	explicit := 0
+	if c.Config {
+		explicit++
+	}
+	if c.Sprint {
+		explicit++
+	}
+	if c.Ticket {
+		explicit++
+	}
+	if explicit > 1 {
+		return errors.New("choose only one of --config, --sprint, or --ticket")
+	}
+	if c.Config {
+		if target != "" && !strings.EqualFold(target, "config") {
+			return errors.New("--config does not accept a sprint or ticket target")
+		}
+		return (&RmConfigCmd{}).Run(ctx)
+	}
+	if target == "" {
+		return errors.New("provide a sprint name or ticket ID")
+	}
+	basePath, err := ctx.ProjectPath()
+	if err != nil {
+		return err
+	}
+	exists := sprintExists(basePath, target)
+	isTicket := isTicketID(target)
+	if c.Sprint {
+		return (&RmSprintCmd{Sprint: target}).Run(ctx)
+	}
+	if c.Ticket {
+		return (&RmTicketCmd{ID: target}).Run(ctx)
+	}
+	if strings.EqualFold(target, "config") {
+		if exists {
+			kind, err := resolveRemovalTarget(target, []string{"config", "sprint"}, bufio.NewReader(os.Stdin), os.Stdout, stdinIsTerminal())
+			if err != nil {
+				return err
+			}
+			if kind == "sprint" {
+				return (&RmSprintCmd{Sprint: target}).Run(ctx)
+			}
+		}
+		return (&RmConfigCmd{}).Run(ctx)
+	}
+	if exists && isTicket {
+		kind, err := resolveRemovalTarget(target, []string{"sprint", "ticket"}, bufio.NewReader(os.Stdin), os.Stdout, stdinIsTerminal())
+		if err != nil {
+			return err
+		}
+		if kind == "ticket" {
+			return (&RmTicketCmd{ID: target}).Run(ctx)
+		}
+		return (&RmSprintCmd{Sprint: target}).Run(ctx)
+	}
+	if isTicket {
+		return (&RmTicketCmd{ID: target}).Run(ctx)
+	}
+	return (&RmSprintCmd{Sprint: target}).Run(ctx)
 }
 
 type RmConfigCmd struct{}
@@ -292,7 +358,7 @@ func (c *RmSprintCmd) Run(ctx *Context) error {
 	if err != nil {
 		return err
 	}
-	target := filepath.Join(baseAbs, c.Sprint)
+	target := filepath.Join(baseAbs, sanitizeSprintFolderName(c.Sprint))
 	absTarget, err := filepath.Abs(target)
 	if err != nil {
 		return err
@@ -323,7 +389,7 @@ type RmTicketCmd struct {
 }
 
 func (c *RmTicketCmd) Run(ctx *Context) error {
-	id := strings.TrimSpace(c.ID)
+	id := strings.ToUpper(strings.TrimSpace(c.ID))
 	if !isTicketID(id) {
 		return fmt.Errorf("invalid ticket id %q", c.ID)
 	}
@@ -369,14 +435,63 @@ func (c *RmTicketCmd) Run(ctx *Context) error {
 	return nil
 }
 
+func sprintExists(basePath, sprint string) bool {
+	path := filepath.Join(basePath, sanitizeSprintFolderName(sprint))
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}
+
+func resolveRemovalTarget(target string, options []string, reader *bufio.Reader, out io.Writer, interactive bool) (string, error) {
+	if !interactive {
+		return "", fmt.Errorf("target %q is ambiguous; rerun with an explicit removal flag", target)
+	}
+	fmt.Fprintf(out, "Target %q is ambiguous:\n", target)
+	labels := map[string]string{
+		"config": "Remove config file",
+		"sprint": "Remove sprint folder",
+		"ticket": "Remove ticket file",
+	}
+	for i, option := range options {
+		fmt.Fprintf(out, "  %d) %s\n", i+1, labels[option])
+	}
+	fmt.Fprint(out, "Selection: ")
+	raw, err := reader.ReadString('\n')
+	if err != nil {
+		return "", err
+	}
+	selected, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || selected < 1 || selected > len(options) {
+		return "", errors.New("invalid removal selection")
+	}
+	return options[selected-1], nil
+}
+
 var ticketIDPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]+-[0-9]+$`)
 var sprintNumberPattern = regexp.MustCompile(`\d+`)
 
 func isTicketID(id string) bool {
-	return ticketIDPattern.MatchString(strings.TrimSpace(id))
+	return ticketIDPattern.MatchString(strings.ToUpper(strings.TrimSpace(id)))
 }
 
 func findSprint(sprints []jira.Sprint, input string) (*jira.Sprint, error) {
+	exact, matches := findSprintMatches(sprints, input)
+	if exact != nil {
+		return exact, nil
+	}
+	if len(matches) > 1 {
+		names := make([]string, 0, len(matches))
+		for _, match := range matches {
+			names = append(names, match.Name)
+		}
+		return nil, fmt.Errorf("sprint %q is ambiguous; matches: %s", strings.TrimSpace(input), strings.Join(names, ", "))
+	}
+	if len(matches) == 1 {
+		return &matches[0], nil
+	}
+	return nil, nil
+}
+
+func findSprintMatches(sprints []jira.Sprint, input string) (*jira.Sprint, []jira.Sprint) {
 	trimmed := strings.TrimSpace(input)
 	if trimmed == "" {
 		return nil, nil
@@ -389,21 +504,16 @@ func findSprint(sprints []jira.Sprint, input string) (*jira.Sprint, error) {
 	if !isDigits(trimmed) {
 		return nil, nil
 	}
-	matches := make([]string, 0, 1)
-	var selected *jira.Sprint
+	matches := make([]jira.Sprint, 0, 1)
 	for i := range sprints {
 		for _, part := range sprintNumberPattern.FindAllString(sprints[i].Name, -1) {
 			if part == trimmed {
-				matches = append(matches, sprints[i].Name)
-				selected = &sprints[i]
+				matches = append(matches, sprints[i])
 				break
 			}
 		}
 	}
-	if len(matches) > 1 {
-		return nil, fmt.Errorf("sprint %q is ambiguous; matches: %s", trimmed, strings.Join(matches, ", "))
-	}
-	return selected, nil
+	return nil, matches
 }
 
 func isDigits(value string) bool {
@@ -443,11 +553,207 @@ type FetchCmd struct {
 }
 
 func (c *FetchCmd) Run(ctx *Context) error {
-	_, err := ctx.ProjectPath()
+	if strings.TrimSpace(c.Sprint) != "" && strings.TrimSpace(c.Ticket) != "" {
+		return errors.New("provide either a sprint target or --ticket, not both")
+	}
+	basePath, err := ctx.ProjectPath()
 	if err != nil {
 		return err
 	}
-	return jira.ErrNotImplemented
+	client, err := ctx.JiraClient()
+	if err != nil {
+		return err
+	}
+	projectKey, err := ensureProject(ctx, client)
+	if err != nil {
+		return err
+	}
+	boardID, err := ensureBoard(ctx, client, projectKey)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(c.Ticket) != "" {
+		return fetchTicket(ctx, client, basePath, boardID, c.Ticket)
+	}
+
+	sprints, err := client.ListSprints(context.Background(), boardID)
+	if err != nil {
+		return err
+	}
+	var selected []*jira.Sprint
+	if strings.TrimSpace(c.Sprint) == "" {
+		selected = make([]*jira.Sprint, 0, len(sprints))
+		for i := range sprints {
+			selected = append(selected, &sprints[i])
+		}
+	} else {
+		sprint, err := resolveFetchSprintSelection(sprints, c.Sprint, bufio.NewReader(os.Stdin), os.Stdout, stdinIsTerminal())
+		if err != nil {
+			return err
+		}
+		if sprint == nil {
+			return fmt.Errorf("sprint %q not found", c.Sprint)
+		}
+		selected = []*jira.Sprint{sprint}
+	}
+
+	for _, sprint := range selected {
+		list, err := client.ListSprintTickets(context.Background(), boardID, sprint.ID)
+		if err != nil {
+			return err
+		}
+		for _, ticket := range list {
+			detail, err := client.GetTicket(context.Background(), ticket.ID)
+			if err != nil {
+				return err
+			}
+			if err := writeTicketMarkdown(basePath, sprint.Name, detail); err != nil {
+				return err
+			}
+		}
+		fmt.Printf("fetched %d tickets for %s\n", len(list), sprint.Name)
+	}
+	return nil
+}
+
+func resolveFetchSprintSelection(sprints []jira.Sprint, input string, reader *bufio.Reader, out io.Writer, interactive bool) (*jira.Sprint, error) {
+	exact, matches := findSprintMatches(sprints, input)
+	if exact != nil {
+		return exact, nil
+	}
+	if len(matches) == 0 {
+		return nil, nil
+	}
+	if len(matches) == 1 {
+		return &matches[0], nil
+	}
+	if !interactive {
+		names := make([]string, 0, len(matches))
+		for _, match := range matches {
+			names = append(names, match.Name)
+		}
+		return nil, fmt.Errorf("sprint %q is ambiguous; matches: %s", strings.TrimSpace(input), strings.Join(names, ", "))
+	}
+	fmt.Fprintf(out, "Sprint %q is ambiguous. Select a sprint:\n", strings.TrimSpace(input))
+	for i, sprint := range matches {
+		fmt.Fprintf(out, "  %d) %s\n", i+1, sprint.Name)
+	}
+	fmt.Fprint(out, "Sprint number: ")
+	raw, err := reader.ReadString('\n')
+	if err != nil {
+		return nil, err
+	}
+	selected, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || selected < 1 || selected > len(matches) {
+		return nil, errors.New("invalid sprint selection")
+	}
+	return &matches[selected-1], nil
+}
+
+func fetchTicket(ctx *Context, client *jira.Client, basePath string, boardID int, id string) error {
+	ticketID := strings.ToUpper(strings.TrimSpace(id))
+	if !isTicketID(ticketID) {
+		return fmt.Errorf("invalid ticket id %q", id)
+	}
+	sprints, err := client.ListSprints(context.Background(), boardID)
+	if err != nil {
+		return err
+	}
+	for i := range sprints {
+		list, err := client.ListSprintTickets(context.Background(), boardID, sprints[i].ID)
+		if err != nil {
+			return err
+		}
+		for _, item := range list {
+			if !strings.EqualFold(item.ID, ticketID) {
+				continue
+			}
+			ticket, err := client.GetTicket(context.Background(), ticketID)
+			if err != nil {
+				return err
+			}
+			if err := writeTicketMarkdown(basePath, sprints[i].Name, ticket); err != nil {
+				return err
+			}
+			fmt.Printf("fetched %s into %s\n", ticket.ID, sprints[i].Name)
+			return nil
+		}
+	}
+	return fmt.Errorf("ticket %q not found in board %d", ticketID, boardID)
+}
+
+func writeTicketMarkdown(basePath, sprint string, ticket jira.IssueTicket) error {
+	root, sprintDir, err := sprintWritePath(basePath, sprint)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	if err := root.MkdirAll(sprintDir, 0o755); err != nil {
+		return err
+	}
+	if info, err := root.Lstat(sprintDir); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("invalid sprint path %q", sprint)
+	} else if err != nil {
+		return err
+	}
+	path := filepath.Join(sprintDir, ticket.ID+".md")
+	if info, err := root.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("ticket file %q must not be a symlink", ticket.ID+".md")
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	body := ticket.Description
+	if strings.TrimSpace(body) != "" && !strings.HasSuffix(body, "\n") {
+		body += "\n"
+	}
+	content := fmt.Sprintf(`---
+id: %s
+title: %s
+assignee: %s
+reporter: %s
+workflow_state: %s
+url: %s
+---
+%s`, ticket.ID, ticket.Title, ticket.Assignee, ticket.Reporter, ticket.State, ticket.URL, body)
+	file, err := root.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	_, err = file.Write([]byte(content))
+	return err
+}
+
+func sprintWritePath(basePath, sprint string) (*os.Root, string, error) {
+	baseAbs, err := filepath.Abs(basePath)
+	if err != nil {
+		return nil, "", err
+	}
+	if err := os.MkdirAll(baseAbs, 0o755); err != nil {
+		return nil, "", err
+	}
+	name := sanitizeSprintFolderName(sprint)
+	if name == "" {
+		return nil, "", errors.New("sprint name is required")
+	}
+	root, err := os.OpenRoot(baseAbs)
+	if err != nil {
+		return nil, "", err
+	}
+	return root, name, nil
+}
+
+func sanitizeSprintFolderName(sprint string) string {
+	name := strings.TrimSpace(sprint)
+	replacer := strings.NewReplacer("%", "%25", "/", "%2F", "\\", "%5C")
+	name = replacer.Replace(name)
+	switch name {
+	case ".":
+		name = "%2E"
+	case "..":
+		name = "%2E%2E"
+	}
+	return strings.TrimSpace(name)
 }
 
 type LsCmd struct {
