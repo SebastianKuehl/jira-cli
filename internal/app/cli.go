@@ -99,7 +99,7 @@ func (c *Context) ProjectPath() (string, error) {
 	if c.CLI.Config.BasePath == "" {
 		return os.Getwd()
 	}
-	return filepath.Abs(c.CLI.Config.BasePath)
+	return normalizePath(c.CLI.Config.BasePath)
 }
 
 type TestCmd struct{}
@@ -184,7 +184,7 @@ func (c *ConfigureCmd) Run(ctx *Context) error {
 	}
 
 	if c.BasePath != "" {
-		p, err := filepath.Abs(c.BasePath)
+		p, err := normalizePath(c.BasePath)
 		if err != nil {
 			return err
 		}
@@ -359,6 +359,22 @@ func emptyFallback(value string) string {
 		return "-"
 	}
 	return value
+}
+
+func normalizePath(p string) (string, error) {
+	p = strings.TrimSpace(p)
+	if p == "~" || strings.HasPrefix(p, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		if p == "~" {
+			p = home
+		} else {
+			p = filepath.Join(home, strings.TrimPrefix(p, "~/"))
+		}
+	}
+	return filepath.Abs(p)
 }
 
 type CatCmd struct {
