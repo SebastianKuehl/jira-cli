@@ -20,6 +20,7 @@ The CLI looks for required fields JIRA_BASE_URL and JIRA_TOKEN in order:
 Configuration is stored in the user's home path in the folder `.jira/config`.
 The user can configure the cli:
 - project: if no project is configured, each command has to prompt the user to interactively select from a list of available jira projects. If a project is configured, no prompt occurs
+- board: a board specific to the selected project. If not configured the user will be prompted whereever required to specify a board from a list of boards for the given project
 - project base path: an optional directory where folders and files will be written to for the configured project. Without an base path configured folders and files will be written to the command invokation folder
 
 ### Flow

@@ -49,15 +49,15 @@ type CLI struct {
 	BaseURL string `help:"Jira base URL." env:"JIRA_BASE_URL"`
 	Token   string `help:"Jira token." env:"JIRA_TOKEN"`
 
-	Test   TestCmd   `cmd:"" help:"Checks if Jira credentials can reach Jira."`
-	Config ConfigCmd `cmd:"config" help:"Configure default project and base path."`
-	Rm     RmCmd     `cmd:"rm" help:"Remove config, sprint folder, or ticket file."`
-	Fetch  FetchCmd  `cmd:"" help:"Fetch tickets and group by sprint."`
-	Ls        LsCmd        `cmd:"" help:"List sprints or tickets in a sprint."`
-	Cat       CatCmd       `cmd:"" help:"Print sprint goal or ticket content."`
-	Move      MoveCmd      `cmd:"" help:"Move ticket to next workflow state."`
-	Assign    AssignCmd    `cmd:"" help:"Assign ticket to user."`
-	Unassign  UnassignCmd  `cmd:"" help:"Unassign ticket."`
+	Test     TestCmd     `cmd:"" help:"Checks if Jira credentials can reach Jira."`
+	Config   ConfigCmd   `cmd:"config" help:"Configure default project and base path."`
+	Rm       RmCmd       `cmd:"rm" help:"Remove config, sprint folder, or ticket file."`
+	Fetch    FetchCmd    `cmd:"" help:"Fetch tickets and group by sprint."`
+	Ls       LsCmd       `cmd:"" help:"List sprints or tickets in a sprint."`
+	Cat      CatCmd      `cmd:"" help:"Print sprint goal or ticket content."`
+	Move     MoveCmd     `cmd:"" help:"Move ticket to next workflow state."`
+	Assign   AssignCmd   `cmd:"" help:"Assign ticket to user."`
+	Unassign UnassignCmd `cmd:"" help:"Unassign ticket."`
 
 	Cfg config.Config `kong:"-"`
 }
@@ -193,6 +193,32 @@ func (c *ConfigCmd) Run(ctx *Context) error {
 
 	cfg := config.Config{
 		Project: projects[selected-1].Key,
+	}
+
+	boards, err := client.ListBoards(context.Background(), cfg.Project)
+	if err != nil {
+		fmt.Println("Warning: unable to list boards, skipping board selection:", err)
+	} else if len(boards) > 0 {
+		fmt.Printf("Select a default board for project %s:\n", cfg.Project)
+		for i, b := range boards {
+			fmt.Printf("  %d) %d - %s\n", i+1, b.ID, b.Name)
+		}
+		fmt.Print("Board number (leave empty to skip): ")
+		rawBoard, err := reader.ReadString('\n')
+		if err != nil {
+			return err
+		}
+		rawBoard = strings.TrimSpace(rawBoard)
+		if rawBoard != "" {
+			selectedBoard, err := strconv.Atoi(rawBoard)
+			if err != nil || selectedBoard < 1 || selectedBoard > len(boards) {
+				return errors.New("invalid board selection")
+			}
+			cfg.BoardID = boards[selectedBoard-1].ID
+			cfg.BoardByProject = map[string]int{
+				cfg.Project: cfg.BoardID,
+			}
+		}
 	}
 
 	fmt.Print("Project base path (leave empty for current directory): ")
@@ -381,13 +407,43 @@ func ensureProject(ctx *Context, client *jira.Client) (string, error) {
 }
 
 func ensureBoard(ctx *Context, client *jira.Client, projectKey string) (int, error) {
-	if ctx.CLI.Cfg.BoardID > 0 {
-		return ctx.CLI.Cfg.BoardID, nil
-	}
 	boards, err := client.ListBoards(context.Background(), projectKey)
 	if err != nil {
 		return 0, err
 	}
+	isValidBoard := func(id int) bool {
+		for _, board := range boards {
+			if board.ID == id {
+				return true
+			}
+		}
+		return false
+	}
+	if ctx.CLI.Cfg.BoardByProject != nil && ctx.CLI.Cfg.BoardByProject[projectKey] > 0 {
+		id := ctx.CLI.Cfg.BoardByProject[projectKey]
+		if isValidBoard(id) {
+			return id, nil
+		}
+		cfg := ctx.CLI.Cfg
+		delete(cfg.BoardByProject, projectKey)
+		if err := config.Save(cfg); err != nil {
+			return 0, err
+		}
+		ctx.CLI.Cfg = cfg
+	}
+	if ctx.CLI.Cfg.BoardID > 0 && isValidBoard(ctx.CLI.Cfg.BoardID) {
+		cfg := ctx.CLI.Cfg
+		if cfg.BoardByProject == nil {
+			cfg.BoardByProject = map[string]int{}
+		}
+		cfg.BoardByProject[projectKey] = cfg.BoardID
+		if err := config.Save(cfg); err != nil {
+			return 0, err
+		}
+		ctx.CLI.Cfg = cfg
+		return cfg.BoardID, nil
+	}
+
 	if len(boards) == 0 {
 		return 0, fmt.Errorf("no Jira boards found for project %s", projectKey)
 	}
@@ -410,6 +466,10 @@ func ensureBoard(ctx *Context, client *jira.Client, projectKey string) (int, err
 	}
 	cfg := ctx.CLI.Cfg
 	cfg.BoardID = boards[selected-1].ID
+	if cfg.BoardByProject == nil {
+		cfg.BoardByProject = map[string]int{}
+	}
+	cfg.BoardByProject[projectKey] = cfg.BoardID
 	if err := config.Save(cfg); err != nil {
 		return 0, err
 	}
