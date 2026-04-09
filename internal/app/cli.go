@@ -621,8 +621,85 @@ type CatCmd struct {
 }
 
 func (c *CatCmd) Run(ctx *Context) error {
-	_ = ctx
-	return jira.ErrNotImplemented
+	client, err := ctx.JiraClient()
+	if err != nil {
+		return err
+	}
+
+	if isTicketID(c.Target) {
+		ticket, err := client.GetTicket(context.Background(), c.Target)
+		if err != nil {
+			return err
+		}
+		printTicket(ticket)
+		return nil
+	}
+
+	// Treat target as a sprint name — fetch the sprint goal from Jira.
+	projectKey, err := ensureProject(ctx, client)
+	if err != nil {
+		return err
+	}
+	boardID, err := ensureBoard(ctx, client, projectKey)
+	if err != nil {
+		return err
+	}
+	sprints, err := client.ListSprints(context.Background(), boardID)
+	if err != nil {
+		return err
+	}
+	for _, sprint := range sprints {
+		if strings.EqualFold(sprint.Name, c.Target) || strconv.Itoa(sprint.ID) == c.Target {
+			if strings.TrimSpace(sprint.Goal) == "" {
+				fmt.Println("(no goal set for this sprint)")
+			} else {
+				fmt.Println(sprint.Goal)
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("sprint %q not found", c.Target)
+}
+
+func printTicket(t jira.IssueTicket) {
+	fmt.Printf("id:       %s\n", t.ID)
+	fmt.Printf("title:    %s\n", t.Title)
+	fmt.Printf("state:    %s\n", emptyFallback(t.State))
+	fmt.Printf("assignee: %s\n", emptyFallback(t.Assignee))
+	fmt.Printf("reporter: %s\n", emptyFallback(t.Reporter))
+	if t.Priority != "" {
+		fmt.Printf("priority: %s\n", t.Priority)
+	}
+	if len(t.Labels) > 0 {
+		fmt.Printf("labels:   %s\n", strings.Join(t.Labels, ", "))
+	}
+	if t.URL != "" {
+		fmt.Printf("url:      %s\n", t.URL)
+	}
+	if strings.TrimSpace(t.Description) != "" {
+		fmt.Println()
+		fmt.Println(t.Description)
+	}
+}
+
+// isTicketID returns true when s looks like a Jira ticket key (e.g. PROJ-123 or proj-123).
+func isTicketID(s string) bool {
+	upper := strings.ToUpper(s)
+	dash := strings.LastIndex(upper, "-")
+	if dash <= 0 || dash == len(upper)-1 {
+		return false
+	}
+	for _, ch := range upper[:dash] {
+		if (ch < 'A' || ch > 'Z') && (ch < '0' || ch > '9') && ch != '_' {
+			return false
+		}
+	}
+	for _, ch := range upper[dash+1:] {
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 type MoveCmd struct {

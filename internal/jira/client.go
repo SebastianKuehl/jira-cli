@@ -34,15 +34,20 @@ type Sprint struct {
 	ID    int    `json:"id"`
 	Name  string `json:"name"`
 	State string `json:"state"`
+	Goal  string `json:"goal"`
 }
 
 type IssueTicket struct {
-	ID       string
-	Title    string
-	Assignee string
-	Reporter string
-	State    string
-	PRLink   string
+	ID          string
+	Title       string
+	Assignee    string
+	Reporter    string
+	State       string
+	PRLink      string
+	Description string
+	Priority    string
+	Labels      []string
+	URL         string
 }
 
 func NewClient(baseURL, token string) *Client {
@@ -412,4 +417,117 @@ func (c *Client) ListSprintTickets(ctx context.Context, boardID, sprintID int) (
 		}
 	}
 	return out, nil
+}
+
+func (c *Client) GetTicket(ctx context.Context, issueKey string) (IssueTicket, error) {
+	if c.BaseURL == "" || c.Token == "" {
+		return IssueTicket{}, errors.New("missing jira credentials")
+	}
+	u := fmt.Sprintf("%s/rest/api/2/issue/%s", c.BaseURL, url.PathEscape(issueKey))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return IssueTicket{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	req.Header.Set("Accept", "application/json")
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return IssueTicket{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return IssueTicket{}, fmt.Errorf("ticket %q not found", issueKey)
+	}
+	if resp.StatusCode >= 300 {
+		return IssueTicket{}, fmt.Errorf("jira get issue failed with status %s", resp.Status)
+	}
+
+	var parsed struct {
+		Key    string `json:"key"`
+		Fields struct {
+			Summary     string          `json:"summary"`
+			Description json.RawMessage `json:"description"`
+			Priority    *struct {
+				Name string `json:"name"`
+			} `json:"priority"`
+			Labels   []string `json:"labels"`
+			Status   struct {
+				Name string `json:"name"`
+			} `json:"status"`
+			Assignee *struct {
+				DisplayName string `json:"displayName"`
+			} `json:"assignee"`
+			Reporter *struct {
+				DisplayName string `json:"displayName"`
+			} `json:"reporter"`
+		} `json:"fields"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		return IssueTicket{}, err
+	}
+
+	ticket := IssueTicket{
+		ID:     parsed.Key,
+		Title:  parsed.Fields.Summary,
+		State:  parsed.Fields.Status.Name,
+		Labels: parsed.Fields.Labels,
+		URL:    strings.TrimRight(c.BaseURL, "/") + "/browse/" + parsed.Key,
+	}
+	ticket.Description = decodeDescription(parsed.Fields.Description)
+	if parsed.Fields.Priority != nil {
+		ticket.Priority = parsed.Fields.Priority.Name
+	}
+	if parsed.Fields.Assignee != nil {
+		ticket.Assignee = parsed.Fields.Assignee.DisplayName
+	}
+	if parsed.Fields.Reporter != nil {
+		ticket.Reporter = parsed.Fields.Reporter.DisplayName
+	}
+	return ticket, nil
+}
+
+// decodeDescription handles both plain-string (Jira Server/DC wiki markup) and
+// Atlassian Document Format object (Jira Cloud) responses for the description field.
+func decodeDescription(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	// Plain string (Jira Server / Data Center)
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	// ADF object (Jira Cloud) — extract text nodes recursively
+	var node adfNode
+	if err := json.Unmarshal(raw, &node); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(extractADFText(&node))
+}
+
+type adfNode struct {
+	Type    string            `json:"type"`
+	Text    string            `json:"text"`
+	Content []adfNode         `json:"content"`
+	Attrs   map[string]interface{} `json:"attrs"`
+}
+
+func extractADFText(n *adfNode) string {
+	if n == nil {
+		return ""
+	}
+	if n.Type == "text" {
+		return n.Text
+	}
+	var sb strings.Builder
+	for i := range n.Content {
+		sb.WriteString(extractADFText(&n.Content[i]))
+	}
+	// Add newline after block-level nodes so output is readable
+	switch n.Type {
+	case "paragraph", "heading", "bulletList", "orderedList", "listItem",
+		"blockquote", "codeBlock", "rule", "panel":
+		sb.WriteString("\n")
+	}
+	return sb.String()
 }
