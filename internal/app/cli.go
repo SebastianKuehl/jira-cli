@@ -526,6 +526,16 @@ func selectedSprints(sprints []jira.Sprint, query string) ([]jira.Sprint, error)
 	if sprint := findSprint(sprints, query); sprint != nil {
 		return []jira.Sprint{*sprint}, nil
 	}
+	recent := latestSprints(sprints, 10)
+	if matches := findApproximateSprints(recent, query); len(matches) == 1 {
+		return []jira.Sprint{matches[0]}, nil
+	} else if len(matches) > 1 {
+		names := make([]string, 0, len(matches))
+		for _, sprint := range matches {
+			names = append(names, sprint.Name)
+		}
+		return nil, fmt.Errorf("sprint %q is ambiguous; matches: %s", query, strings.Join(names, ", "))
+	}
 	if matches := findApproximateSprints(sprints, query); len(matches) == 1 {
 		return []jira.Sprint{matches[0]}, nil
 	} else if len(matches) > 1 {
@@ -536,6 +546,13 @@ func selectedSprints(sprints []jira.Sprint, query string) ([]jira.Sprint, error)
 		return nil, fmt.Errorf("sprint %q is ambiguous; matches: %s", query, strings.Join(names, ", "))
 	}
 	return nil, fmt.Errorf("sprint %q not found", query)
+}
+
+func latestSprints(sprints []jira.Sprint, limit int) []jira.Sprint {
+	if limit <= 0 || len(sprints) <= limit {
+		return sprints
+	}
+	return sprints[:limit]
 }
 
 func findApproximateSprints(sprints []jira.Sprint, query string) []jira.Sprint {

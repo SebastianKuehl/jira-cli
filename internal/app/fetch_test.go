@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -289,6 +290,40 @@ func TestSelectedSprintsRejectsAmbiguousApproximation(t *testing.T) {
 	_, err := selectedSprints(sprints, "devs20")
 	if err == nil || !strings.Contains(err.Error(), "ambiguous") {
 		t.Fatalf("expected ambiguous approximation error, got %v", err)
+	}
+}
+
+func TestSelectedSprintsPrefersLatestTenForApproximation(t *testing.T) {
+	sprints := []jira.Sprint{
+		{ID: 201, Name: "E51(S4).DevS201"},
+	}
+	for i := 0; i < 10; i++ {
+		sprints = append(sprints, jira.Sprint{ID: 300 + i, Name: fmt.Sprintf("Noise-%d", i)})
+	}
+	sprints = append(sprints, jira.Sprint{ID: 1201, Name: "Legacy201"})
+
+	selected, err := selectedSprints(sprints, "201")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(selected) != 1 || selected[0].Name != "E51(S4).DevS201" {
+		t.Fatalf("expected latest ten window to win, got %#v", selected)
+	}
+}
+
+func TestSelectedSprintsFallsBackToOlderApproximationWhenLatestTenMiss(t *testing.T) {
+	var sprints []jira.Sprint
+	for i := 0; i < 10; i++ {
+		sprints = append(sprints, jira.Sprint{ID: 400 + i, Name: fmt.Sprintf("Noise-%d", i)})
+	}
+	sprints = append(sprints, jira.Sprint{ID: 999, Name: "Historic Sprint 201"})
+
+	selected, err := selectedSprints(sprints, "201")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(selected) != 1 || selected[0].Name != "Historic Sprint 201" {
+		t.Fatalf("expected fallback to older sprint when latest ten miss, got %#v", selected)
 	}
 }
 
