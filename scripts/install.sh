@@ -14,21 +14,27 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 INSTALL_DIR="${JIRA_INSTALL_DIR:-$HOME/.local/bin}"
 BIN_NAME="jira"
+TARGET_PATH="$INSTALL_DIR/$BIN_NAME"
 
-echo "Building $BIN_NAME from $REPO_ROOT..."
+echo "[1/6] Starting jira installation for $OS"
+echo "[2/6] Repository root: $REPO_ROOT"
+echo "[3/6] Install directory: $INSTALL_DIR"
 mkdir -p "$INSTALL_DIR"
 
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
+echo "[4/6] Building binary..."
 (
   cd "$REPO_ROOT"
   go build -o "$TMP_DIR/$BIN_NAME" ./cmd/jira
 )
 
-install -m 0755 "$TMP_DIR/$BIN_NAME" "$INSTALL_DIR/$BIN_NAME"
+echo "[5/6] Installing binary to $TARGET_PATH"
+install -m 0755 "$TMP_DIR/$BIN_NAME" "$TARGET_PATH"
 
-echo "Installed to: $INSTALL_DIR/$BIN_NAME"
+echo "[6/6] Installation complete: $TARGET_PATH"
+echo "Run 'jira --help' to verify."
 if ! echo ":$PATH:" | grep -q ":$INSTALL_DIR:"; then
   echo "Note: $INSTALL_DIR is not on PATH."
   echo "Add this to your shell profile:"

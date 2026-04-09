@@ -26,3 +26,8 @@ go test ./...
 Optional install target directory:
 - macOS/Linux: set `JIRA_INSTALL_DIR`
 - Windows: pass `-InstallDir "C:\path\to\bin"`
+
+## Uninstall locally
+
+- macOS/Linux: `./scripts/uninstall.sh`
+- Windows (PowerShell): `.\scripts\uninstall.ps1`
