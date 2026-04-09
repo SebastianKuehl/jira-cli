@@ -309,48 +309,41 @@ func (c *Client) GetCurrentUser(ctx context.Context) (User, error) {
 	return u, nil
 }
 
-func (c *Client) ListAssignableUsers(ctx context.Context, issueKey string) ([]User, error) {
-	const pageSize = 50
-	out := make([]User, 0)
-	startAt := 0
-	for {
-		u, err := url.Parse(c.BaseURL + "/rest/api/2/user/assignable/search")
-		if err != nil {
-			return nil, err
-		}
-		q := u.Query()
-		q.Set("issueKey", issueKey)
-		q.Set("startAt", strconv.Itoa(startAt))
-		q.Set("maxResults", strconv.Itoa(pageSize))
-		u.RawQuery = q.Encode()
-
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
-		if err != nil {
-			return nil, err
-		}
-		req.Header.Set("Authorization", "Bearer "+c.Token)
-		req.Header.Set("Accept", "application/json")
-		resp, err := c.HTTPClient.Do(req)
-		if err != nil {
-			return nil, err
-		}
-		if resp.StatusCode >= 300 {
-			resp.Body.Close()
-			return nil, fmt.Errorf("list assignable users failed with status %s", resp.Status)
-		}
-		var page []User
-		if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
-			resp.Body.Close()
-			return nil, err
-		}
-		resp.Body.Close()
-		out = append(out, page...)
-		if len(page) < pageSize {
-			break
-		}
-		startAt += len(page)
+// SearchAssignableUsers fetches users that can be assigned to issueKey, optionally
+// filtered by query. Uses the internal Jira endpoint which returns a {"users":[...]}
+// envelope and supports server-side filtering via the query parameter.
+func (c *Client) SearchAssignableUsers(ctx context.Context, issueKey, query string) ([]User, error) {
+	u, err := url.Parse(c.BaseURL + "/rest/internal/2/users/assignee")
+	if err != nil {
+		return nil, err
 	}
-	return out, nil
+	q := u.Query()
+	q.Set("issueKey", issueKey)
+	q.Set("maxResults", "100")
+	q.Set("query", query)
+	u.RawQuery = q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	req.Header.Set("Accept", "application/json")
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("list assignable users failed with status %s", resp.Status)
+	}
+	var envelope struct {
+		Users []User `json:"users"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+		return nil, err
+	}
+	return envelope.Users, nil
 }
 
 func (c *Client) SearchUsers(ctx context.Context, query string) ([]User, error) {
