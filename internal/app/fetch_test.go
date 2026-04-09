@@ -279,8 +279,11 @@ func TestFetchCmdRunFiltersSprintsByYear(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, "Sprint 2025", "PROJ-25.md")); !os.IsNotExist(err) {
 		t.Fatalf("expected non-matching year sprint to be skipped, stat err=%v", err)
 	}
-	if !strings.Contains(output, "retrieving data for sprint Sprint 2026") {
-		t.Fatalf("expected sprint retrieval progress, got %q", output)
+	if !strings.Contains(output, "retrieving data for sprints: Sprint 2026") {
+		t.Fatalf("expected aggregate sprint retrieval progress, got %q", output)
+	}
+	if !strings.Contains(output, "writing markdown files for sprint Sprint 2026") {
+		t.Fatalf("expected sprint write progress, got %q", output)
 	}
 	if !strings.Contains(output, "fetched sprint Sprint 2026 (1 ticket(s))") {
 		t.Fatalf("expected fetched sprint summary, got %q", output)
@@ -694,6 +697,12 @@ func TestFetchCmdRunPrintsProgressForTicketFetch(t *testing.T) {
 
 	if !strings.Contains(output, "retrieving data for ticket PROJ-2") {
 		t.Fatalf("expected ticket retrieval progress, got %q", output)
+	}
+	if !strings.Contains(output, "retrieving data for sprints: Sprint B") {
+		t.Fatalf("expected aggregate sprint retrieval progress, got %q", output)
+	}
+	if !strings.Contains(output, "writing markdown files for sprint Sprint B") {
+		t.Fatalf("expected sprint write progress, got %q", output)
 	}
 	if !strings.Contains(output, "fetched PROJ-2 into Sprint B") {
 		t.Fatalf("expected final ticket fetch output, got %q", output)

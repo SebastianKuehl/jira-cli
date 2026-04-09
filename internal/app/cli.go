@@ -985,7 +985,8 @@ func (c *FetchCmd) fetchResolvedTargets(basePath string, client *jira.Client, bo
 	if ticketID != "" {
 		fmt.Printf("retrieving data for ticket %s\n", ticketID)
 	}
-	sprintTickets, err := collectSprintTickets(context.Background(), client, boardID, targets, true)
+	fmt.Printf("retrieving data for sprints: %s\n", joinSprintNames(targets))
+	sprintTickets, err := collectSprintTickets(context.Background(), client, boardID, targets)
 	if err != nil {
 		return err
 	}
@@ -1009,6 +1010,7 @@ func (c *FetchCmd) fetchResolvedTargets(basePath string, client *jira.Client, bo
 			return fmt.Errorf("ticket %q not found", ticketID)
 		}
 		for _, sprint := range ticketToSprints[ticketID] {
+			fmt.Printf("writing markdown files for sprint %s\n", sprint.Name)
 			if err := writeFetchedTicket(basePath, sprint, ticket); err != nil {
 				return err
 			}
@@ -1024,6 +1026,7 @@ func (c *FetchCmd) fetchResolvedTargets(basePath string, client *jira.Client, bo
 	fetched := 0
 	for _, sprint := range targets {
 		items := sprintTickets[sprint.ID]
+		fmt.Printf("writing markdown files for sprint %s\n", sprint.Name)
 		for _, item := range items {
 			ticket, ok := byID[strings.ToUpper(item.ID)]
 			if !ok {
@@ -1206,12 +1209,9 @@ func parseSprintDisplay(value string) (string, string, bool) {
 	return strings.TrimSpace(matches[1]), matches[2], true
 }
 
-func collectSprintTickets(ctx context.Context, client *jira.Client, boardID int, sprints []jira.Sprint, printProgress bool) (map[int][]jira.IssueTicket, error) {
+func collectSprintTickets(ctx context.Context, client *jira.Client, boardID int, sprints []jira.Sprint) (map[int][]jira.IssueTicket, error) {
 	collected := make(map[int][]jira.IssueTicket, len(sprints))
 	for _, sprint := range sprints {
-		if printProgress {
-			fmt.Printf("retrieving data for sprint %s\n", sprint.Name)
-		}
 		items, err := client.ListSprintTickets(ctx, boardID, sprint.ID)
 		if err != nil {
 			return nil, err
@@ -1219,6 +1219,14 @@ func collectSprintTickets(ctx context.Context, client *jira.Client, boardID int,
 		collected[sprint.ID] = items
 	}
 	return collected, nil
+}
+
+func joinSprintNames(sprints []jira.Sprint) string {
+	names := make([]string, 0, len(sprints))
+	for _, sprint := range sprints {
+		names = append(names, sprint.Name)
+	}
+	return strings.Join(names, ", ")
 }
 
 func mapTicketsToSprints(sprints []jira.Sprint, sprintTickets map[int][]jira.IssueTicket) map[string][]jira.Sprint {
