@@ -1,11 +1,14 @@
 package app
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 
 	"github.com/alecthomas/kong"
 
@@ -119,22 +122,81 @@ type ConfigureCmd struct {
 }
 
 func (c *ConfigureCmd) Run(ctx *Context) error {
+	client, err := ctx.JiraClient()
+	if err != nil {
+		return err
+	}
+	projects, err := client.ListProjects(context.Background())
+	if err != nil {
+		return err
+	}
+	if len(projects) == 0 {
+		return errors.New("no Jira projects available for current credentials")
+	}
+
+	reader := bufio.NewReader(os.Stdin)
+	isInteractive := stdinIsTerminal()
+	if c.Project == "" {
+		if !isInteractive {
+			return errors.New("project must be provided with --project when stdin is not interactive")
+		}
+		fmt.Println("Select a default Jira project:")
+		for i, p := range projects {
+			fmt.Printf("  %d) %s - %s\n", i+1, p.Key, p.Name)
+		}
+		fmt.Print("Project number: ")
+		raw, err := reader.ReadString('\n')
+		if err != nil {
+			return err
+		}
+		selected, err := strconv.Atoi(strings.TrimSpace(raw))
+		if err != nil || selected < 1 || selected > len(projects) {
+			return errors.New("invalid project selection")
+		}
+		c.Project = projects[selected-1].Key
+	}
+
 	cfg := ctx.CLI.Config
 	if c.Project != "" {
 		cfg.Project = c.Project
 	}
+
+	basePathProvidedByFlag := c.BasePath != ""
+	clearBasePath := false
+	if !basePathProvidedByFlag && isInteractive {
+		fmt.Print("Project base path (leave empty for current directory): ")
+		rawBasePath, err := reader.ReadString('\n')
+		if err != nil {
+			return err
+		}
+		c.BasePath = strings.TrimSpace(rawBasePath)
+		if c.BasePath == "" {
+			clearBasePath = true
+		}
+	}
+
 	if c.BasePath != "" {
 		p, err := filepath.Abs(c.BasePath)
 		if err != nil {
 			return err
 		}
 		cfg.BasePath = p
+	} else if clearBasePath {
+		cfg.BasePath = ""
 	}
 	if err := config.Save(cfg); err != nil {
 		return err
 	}
 	fmt.Println("configuration saved")
 	return nil
+}
+
+func stdinIsTerminal() bool {
+	info, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return (info.Mode() & os.ModeCharDevice) != 0
 }
 
 type FetchCmd struct {

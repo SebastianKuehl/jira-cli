@@ -31,3 +31,10 @@ Optional install target directory:
 
 - macOS/Linux: `./scripts/uninstall.sh`
 - Windows (PowerShell): `.\scripts\uninstall.ps1`
+
+## Configure command behavior
+
+`jira configure`:
+- validates Jira credentials first (`JIRA_BASE_URL`, `JIRA_TOKEN`)
+- fetches projects and prompts for default project selection
+- prompts for project base path (leave empty to use current directory)
