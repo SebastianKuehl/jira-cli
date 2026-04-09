@@ -48,6 +48,39 @@ func TestAppRunWithoutArgsPrintsHelp(t *testing.T) {
 	}
 }
 
+func TestAppRunVersionFlagPrintsVersion(t *testing.T) {
+	origStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+
+	os.Stdout = w
+	defer func() { os.Stdout = origStdout }()
+
+	done := make(chan string, 1)
+	go func() {
+		var buf bytes.Buffer
+		_, _ = io.Copy(&buf, r)
+		done <- buf.String()
+	}()
+
+	originalVersion := Version
+	Version = "1.2.3"
+	defer func() { Version = originalVersion }()
+
+	if err := New().Run([]string{"--version"}); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = w.Close()
+	output := strings.TrimSpace(<-done)
+	if output != "1.2.3" {
+		t.Fatalf("expected version output, got %q", output)
+	}
+}
+
 func TestSubcommandHelpOmitsBracketsAndFlags(t *testing.T) {
 	output := renderHelp(t, []string{"rm"})
 	if strings.Contains(output, "[<target>]") {

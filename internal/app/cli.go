@@ -27,6 +27,8 @@ type App struct {
 	cli CLI
 }
 
+var Version = "dev"
+
 func New() *App {
 	return &App{}
 }
@@ -34,6 +36,10 @@ func New() *App {
 func (a *App) Run(args []string) error {
 	parser, err := newParser(&a.cli)
 	if err != nil {
+		return err
+	}
+	if len(args) == 1 && args[0] == "--version" {
+		_, err := fmt.Fprintln(parser.Stdout, Version)
 		return err
 	}
 	if len(args) == 0 {
@@ -61,6 +67,7 @@ func newParser(cli *CLI) (*kong.Kong, error) {
 		kong.Description("Jira CLI to fetch and sync tickets to markdown."),
 		kong.Help(normalizedHelpPrinter(kong.DefaultHelpPrinter)),
 		kong.ShortHelp(normalizedHelpPrinter(kong.DefaultShortHelpPrinter)),
+		kong.Vars{"version": Version},
 	)
 }
 
@@ -104,6 +111,7 @@ func normalizeHelpOutput(output, appName string) string {
 type CLI struct {
 	BaseURL string `help:"Jira base URL." env:"JIRA_BASE_URL"`
 	Token   string `help:"Jira token." env:"JIRA_TOKEN"`
+	Version bool   `name:"version" help:"Print version information and exit."`
 
 	Test     TestCmd     `cmd:"" help:"Checks if Jira credentials can reach Jira."`
 	Config   ConfigCmd   `cmd:"config" help:"Configure default project and base path."`
