@@ -229,6 +229,104 @@ func TestFetchCmdRunFetchesSprintByPositionalTarget(t *testing.T) {
 	}
 }
 
+func TestFetchCmdRunFiltersSprintsByYear(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/rest/agile/1.0/board":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"isLast":true,"values":[{"id":17,"name":"Backend Board"}]}`))
+		case r.URL.Path == "/rest/agile/1.0/board/17/sprint":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"isLast":true,"values":[{"id":23,"name":"Sprint 2026","startDate":"2026-02-01T00:00:00.000Z"},{"id":24,"name":"Sprint 2025","startDate":"2025-12-01T00:00:00.000Z"}]}`))
+		case r.URL.Path == "/rest/agile/1.0/board/17/sprint/23/issue":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"total":1,"issues":[{"key":"PROJ-26","fields":{"summary":"Current year","status":{"name":"Todo"}}}]}`))
+		case r.URL.Path == "/rest/agile/1.0/board/17/sprint/24/issue":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"total":1,"issues":[{"key":"PROJ-25","fields":{"summary":"Old year","status":{"name":"Todo"}}}]}`))
+		case r.URL.Path == "/rest/api/2/issue/PROJ-26":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"key":"PROJ-26","fields":{"summary":"Current year","description":"Fetched","labels":[],"status":{"name":"Todo"}}}`))
+		case r.URL.Path == "/rest/api/2/issue/PROJ-25":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"key":"PROJ-25","fields":{"summary":"Old year","description":"Should not fetch","labels":[],"status":{"name":"Todo"}}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	ctx := &Context{CLI: &CLI{
+		BaseURL: server.URL,
+		Token:   "token",
+		Cfg: config.Config{
+			Project:  "PROJ",
+			BasePath: root,
+			BoardID:  17,
+			BoardByProject: map[string]int{
+				"PROJ": 17,
+			},
+		},
+	}}
+
+	cmd := &FetchCmd{Year: 2026}
+	if err := cmd.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "Sprint 2026", "PROJ-26.md")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "Sprint 2025", "PROJ-25.md")); !os.IsNotExist(err) {
+		t.Fatalf("expected non-matching year sprint to be skipped, stat err=%v", err)
+	}
+}
+
+func TestFetchCmdRunTicketRespectsYearFilter(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/rest/agile/1.0/board":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"isLast":true,"values":[{"id":17,"name":"Backend Board"}]}`))
+		case r.URL.Path == "/rest/agile/1.0/board/17/sprint":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"isLast":true,"values":[{"id":24,"name":"Sprint 2025","startDate":"2025-12-01T00:00:00.000Z"}]}`))
+		case r.URL.Path == "/rest/agile/1.0/board/17/sprint/24/issue":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"total":1,"issues":[{"key":"PROJ-25","fields":{"summary":"Old year","status":{"name":"Todo"}}}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	ctx := &Context{CLI: &CLI{
+		BaseURL: server.URL,
+		Token:   "token",
+		Cfg: config.Config{
+			Project:  "PROJ",
+			BasePath: root,
+			BoardID:  17,
+			BoardByProject: map[string]int{
+				"PROJ": 17,
+			},
+		},
+	}}
+
+	err := (&FetchCmd{Target: "PROJ-25", Year: 2026}).Run(ctx)
+	if err == nil || !strings.Contains(err.Error(), "no sprints found for year 2026") {
+		t.Fatalf("expected year filter error, got %v", err)
+	}
+}
+
+func TestFetchCmdRunRejectsInvalidYear(t *testing.T) {
+	err := (&FetchCmd{Year: 26}).Run(&Context{CLI: &CLI{}})
+	if err == nil || !strings.Contains(err.Error(), "four digit year") {
+		t.Fatalf("expected invalid year error, got %v", err)
+	}
+}
+
 func TestFetchCmdRunApproximatesSprintTarget(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {

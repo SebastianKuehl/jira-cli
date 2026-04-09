@@ -404,11 +404,15 @@ type FetchCmd struct {
 	Target string `arg:"" optional:"" help:"Sprint name or ticket ID to fetch."`
 	Ticket string `name:"ticket" help:"Explicitly fetch one ticket by ID."`
 	Sprint string `name:"sprint" help:"Explicitly fetch one sprint by name or ID."`
+	Year   int    `name:"year" help:"Restrict fetch to sprints in the given four digit year."`
 }
 
 func (c *FetchCmd) Run(ctx *Context) error {
 	if selectedFetchModes(c) > 1 {
 		return errors.New("provide only one of positional target, --ticket, or --sprint")
+	}
+	if c.Year != 0 && (c.Year < 1000 || c.Year > 9999) {
+		return fmt.Errorf("invalid year %d: use a four digit year", c.Year)
 	}
 	basePath, err := ctx.ProjectPath()
 	if err != nil {
@@ -429,6 +433,13 @@ func (c *FetchCmd) Run(ctx *Context) error {
 	sprints, err := client.ListSprints(context.Background(), boardID)
 	if err != nil {
 		return err
+	}
+	sprints = filterSprintsByYear(sprints, c.Year)
+	if len(sprints) == 0 {
+		if c.Year != 0 {
+			return fmt.Errorf("no sprints found for year %d", c.Year)
+		}
+		return errors.New("no sprints found")
 	}
 
 	if ticketID := strings.TrimSpace(c.Ticket); ticketID != "" {
@@ -572,6 +583,28 @@ func sprintSortDate(sprint jira.Sprint) time.Time {
 		}
 	}
 	return time.Time{}
+}
+
+func filterSprintsByYear(sprints []jira.Sprint, year int) []jira.Sprint {
+	if year == 0 {
+		return sprints
+	}
+	filtered := make([]jira.Sprint, 0, len(sprints))
+	for _, sprint := range sprints {
+		if sprintMatchesYear(sprint, year) {
+			filtered = append(filtered, sprint)
+		}
+	}
+	return filtered
+}
+
+func sprintMatchesYear(sprint jira.Sprint, year int) bool {
+	for _, value := range []time.Time{sprint.StartDate, sprint.EndDate, sprint.CompleteDate, sprint.CreatedDate} {
+		if !value.IsZero() && value.Year() == year {
+			return true
+		}
+	}
+	return false
 }
 
 func findApproximateSprints(sprints []jira.Sprint, query string) []jira.Sprint {
