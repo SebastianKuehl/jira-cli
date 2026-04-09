@@ -208,7 +208,7 @@ func (c *ConfigCmd) Run(ctx *Context) error {
 	}
 	basePath := strings.TrimSpace(rawBasePath)
 	if basePath != "" {
-		p, err := filepath.Abs(basePath)
+		p, err := expandPath(basePath)
 		if err != nil {
 			return err
 		}
@@ -252,6 +252,20 @@ type RmTicketCmd struct {
 func (c *RmTicketCmd) Run(ctx *Context) error {
 	_ = ctx
 	return jira.ErrNotImplemented
+}
+
+func expandPath(p string) (string, error) {
+	if p == "~" || strings.HasPrefix(p, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		if p == "~" {
+			return home, nil
+		}
+		p = filepath.Join(home, p[2:])
+	}
+	return filepath.Abs(p)
 }
 
 func stdinIsTerminal() bool {
