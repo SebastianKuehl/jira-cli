@@ -922,27 +922,11 @@ func (c *FetchCmd) Run(ctx *Context) error {
 		}
 		return errors.New("no sprints found")
 	}
-
-	if ticketID := strings.TrimSpace(c.Ticket); ticketID != "" {
-		return c.fetchTicket(basePath, client, boardID, sprints, ticketID)
-	}
-	if sprintTarget := strings.TrimSpace(c.Sprint); sprintTarget != "" {
-		return c.fetchSprints(basePath, client, boardID, sprints, sprintTarget)
-	}
-
-	target := strings.TrimSpace(c.Target)
-	if target == "" {
-		return c.fetchSprints(basePath, client, boardID, sprints, "")
-	}
-	if sprint, err := findSprint(sprints, target); err != nil {
+	targets, ticketID, err := c.resolveFetchTargets(sprints)
+	if err != nil {
 		return err
-	} else if sprint != nil && isTicketID(target) {
-		return fmt.Errorf("target %q is ambiguous; use --ticket or --sprint", target)
 	}
-	if isTicketID(target) {
-		return c.fetchTicket(basePath, client, boardID, sprints, target)
-	}
-	return c.fetchSprints(basePath, client, boardID, sprints, target)
+	return c.fetchResolvedTargets(basePath, client, boardID, targets, ticketID)
 }
 
 func selectedFetchModes(c *FetchCmd) int {
@@ -959,62 +943,98 @@ func selectedFetchModes(c *FetchCmd) int {
 	return count
 }
 
-func (c *FetchCmd) fetchTicket(basePath string, client *jira.Client, boardID int, sprints []jira.Sprint, ticketID string) error {
-	ticketID = strings.ToUpper(strings.TrimSpace(ticketID))
-	fmt.Printf("retrieving data for ticket %s\n", ticketID)
-	sprint, err := findSprintContainingTicket(context.Background(), client, boardID, sprints, ticketID)
-	if err != nil {
-		return err
+func (c *FetchCmd) resolveFetchTargets(sprints []jira.Sprint) ([]jira.Sprint, string, error) {
+	if ticketID := strings.TrimSpace(c.Ticket); ticketID != "" {
+		return sprints, strings.ToUpper(ticketID), nil
 	}
-	ticket, err := client.GetTicket(context.Background(), ticketID)
-	if err != nil {
-		return err
-	}
-	if err := writeFetchedTicket(basePath, *sprint, ticket); err != nil {
-		return err
-	}
-	fmt.Printf("fetched %s into %s\n", ticket.ID, sprintFolderName(*sprint))
-	return nil
-}
-
-func (c *FetchCmd) fetchSprints(basePath string, client *jira.Client, boardID int, sprints []jira.Sprint, target string) error {
-	var (
-		targets []jira.Sprint
-		err     error
-	)
-	if strings.TrimSpace(target) == "" {
-		targets, err = selectedSprints(sprints, target)
+	if sprintTarget := strings.TrimSpace(c.Sprint); sprintTarget != "" {
+		selected, err := resolveFetchSprintSelection(sprints, sprintTarget, bufio.NewReader(os.Stdin), os.Stdout, stdinIsTerminalFunc())
 		if err != nil {
-			return err
-		}
-	} else {
-		selected, err := resolveFetchSprintSelection(sprints, target, bufio.NewReader(os.Stdin), os.Stdout, stdinIsTerminalFunc())
-		if err != nil {
-			return err
+			return nil, "", err
 		}
 		if selected == nil {
-			return fmt.Errorf("sprint %q not found", target)
+			return nil, "", fmt.Errorf("sprint %q not found", sprintTarget)
 		}
-		targets = []jira.Sprint{*selected}
+		return []jira.Sprint{*selected}, "", nil
 	}
+
+	target := strings.TrimSpace(c.Target)
+	if target == "" {
+		selected, err := selectedSprints(sprints, "")
+		return selected, "", err
+	}
+	if sprint, err := findSprint(sprints, target); err != nil {
+		return nil, "", err
+	} else if sprint != nil && isTicketID(target) {
+		return nil, "", fmt.Errorf("target %q is ambiguous; use --ticket or --sprint", target)
+	}
+	if isTicketID(target) {
+		return sprints, strings.ToUpper(target), nil
+	}
+	selected, err := resolveFetchSprintSelection(sprints, target, bufio.NewReader(os.Stdin), os.Stdout, stdinIsTerminalFunc())
+	if err != nil {
+		return nil, "", err
+	}
+	if selected == nil {
+		return nil, "", fmt.Errorf("sprint %q not found", target)
+	}
+	return []jira.Sprint{*selected}, "", nil
+}
+
+func (c *FetchCmd) fetchResolvedTargets(basePath string, client *jira.Client, boardID int, targets []jira.Sprint, ticketID string) error {
+	if ticketID != "" {
+		fmt.Printf("retrieving data for ticket %s\n", ticketID)
+	}
+	sprintTickets, err := collectSprintTickets(context.Background(), client, boardID, targets, true)
+	if err != nil {
+		return err
+	}
+	ticketToSprints := mapTicketsToSprints(targets, sprintTickets)
+	if ticketID != "" {
+		if _, ok := ticketToSprints[ticketID]; !ok {
+			return fmt.Errorf("ticket %q not found in configured board sprints", ticketID)
+		}
+	}
+	tickets, err := client.SearchTicketsBySprintIDs(context.Background(), sprintIDs(targets))
+	if err != nil {
+		return err
+	}
+	byID := make(map[string]jira.IssueTicket, len(tickets))
+	for _, ticket := range tickets {
+		byID[strings.ToUpper(ticket.ID)] = ticket
+	}
+	if ticketID != "" {
+		ticket, ok := byID[ticketID]
+		if !ok {
+			return fmt.Errorf("ticket %q not found", ticketID)
+		}
+		for _, sprint := range ticketToSprints[ticketID] {
+			if err := writeFetchedTicket(basePath, sprint, ticket); err != nil {
+				return err
+			}
+		}
+		folders := make([]string, 0, len(ticketToSprints[ticketID]))
+		for _, sprint := range ticketToSprints[ticketID] {
+			folders = append(folders, sprintFolderName(sprint))
+		}
+		fmt.Printf("fetched %s into %s\n", ticket.ID, strings.Join(folders, ", "))
+		return nil
+	}
+
 	fetched := 0
 	for _, sprint := range targets {
-		fmt.Printf("retrieving data for sprint %s\n", sprint.Name)
-		list, err := client.ListSprintTickets(context.Background(), boardID, sprint.ID)
-		if err != nil {
-			return err
-		}
-		for _, item := range list {
-			ticket, err := client.GetTicket(context.Background(), item.ID)
-			if err != nil {
-				return err
+		items := sprintTickets[sprint.ID]
+		for _, item := range items {
+			ticket, ok := byID[strings.ToUpper(item.ID)]
+			if !ok {
+				return fmt.Errorf("ticket %q not found", item.ID)
 			}
 			if err := writeFetchedTicket(basePath, sprint, ticket); err != nil {
 				return err
 			}
 			fetched++
 		}
-		fmt.Printf("fetched sprint %s (%d ticket(s))\n", sprint.Name, len(list))
+		fmt.Printf("fetched sprint %s (%d ticket(s))\n", sprint.Name, len(items))
 	}
 	if len(targets) == 1 {
 		fmt.Printf("fetched %d ticket(s) for %s\n", fetched, targets[0].Name)
@@ -1186,19 +1206,43 @@ func parseSprintDisplay(value string) (string, string, bool) {
 	return strings.TrimSpace(matches[1]), matches[2], true
 }
 
-func findSprintContainingTicket(ctx context.Context, client *jira.Client, boardID int, sprints []jira.Sprint, ticketID string) (*jira.Sprint, error) {
-	for i := range sprints {
-		items, err := client.ListSprintTickets(ctx, boardID, sprints[i].ID)
+func collectSprintTickets(ctx context.Context, client *jira.Client, boardID int, sprints []jira.Sprint, printProgress bool) (map[int][]jira.IssueTicket, error) {
+	collected := make(map[int][]jira.IssueTicket, len(sprints))
+	for _, sprint := range sprints {
+		if printProgress {
+			fmt.Printf("retrieving data for sprint %s\n", sprint.Name)
+		}
+		items, err := client.ListSprintTickets(ctx, boardID, sprint.ID)
 		if err != nil {
 			return nil, err
 		}
+		collected[sprint.ID] = items
+	}
+	return collected, nil
+}
+
+func mapTicketsToSprints(sprints []jira.Sprint, sprintTickets map[int][]jira.IssueTicket) map[string][]jira.Sprint {
+	sprintByID := make(map[int]jira.Sprint, len(sprints))
+	for _, sprint := range sprints {
+		sprintByID[sprint.ID] = sprint
+	}
+	out := make(map[string][]jira.Sprint)
+	for sprintID, items := range sprintTickets {
+		sprint := sprintByID[sprintID]
 		for _, item := range items {
-			if strings.EqualFold(item.ID, ticketID) {
-				return &sprints[i], nil
-			}
+			key := strings.ToUpper(item.ID)
+			out[key] = append(out[key], sprint)
 		}
 	}
-	return nil, fmt.Errorf("ticket %q not found in configured board sprints", ticketID)
+	return out
+}
+
+func sprintIDs(sprints []jira.Sprint) []int {
+	ids := make([]int, 0, len(sprints))
+	for _, sprint := range sprints {
+		ids = append(ids, sprint.ID)
+	}
+	return ids
 }
 
 func sprintFolderName(sprint jira.Sprint) string {

@@ -29,9 +29,9 @@ func TestFetchCmdRunFetchesSprintTicketsToMarkdown(t *testing.T) {
 		case r.URL.Path == "/rest/agile/1.0/board/17/sprint/23/issue":
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"total":1,"issues":[{"key":"PROJ-1","fields":{"summary":"Implement fetch","status":{"name":"In Progress"},"assignee":{"displayName":"Alice"},"reporter":{"displayName":"Bob"}}}]}`))
-		case r.URL.Path == "/rest/api/2/issue/PROJ-1":
+		case r.Method == http.MethodPost && r.URL.Path == "/rest/api/2/search":
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"key":"PROJ-1","fields":{"summary":"Implement fetch","description":"Ticket body","priority":{"name":"High"},"labels":["cli","sync"],"status":{"name":"In Progress"},"assignee":{"displayName":"Alice"},"reporter":{"displayName":"Bob"}}}`))
+			_, _ = w.Write([]byte(`{"total":1,"issues":[{"key":"PROJ-1","fields":{"summary":"Implement fetch","description":"Ticket body","priority":{"name":"High"},"labels":["cli","sync"],"status":{"name":"In Progress"},"assignee":{"displayName":"Alice"},"reporter":{"displayName":"Bob"}}}]}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -96,9 +96,9 @@ func TestFetchCmdRunFetchesTicketIntoMatchingSprint(t *testing.T) {
 		case r.URL.Path == "/rest/agile/1.0/board/17/sprint/24/issue":
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"total":1,"issues":[{"key":"PROJ-2","fields":{"summary":"Fix fetch","status":{"name":"Todo"}}}]}`))
-		case r.URL.Path == "/rest/api/2/issue/PROJ-2":
+		case r.Method == http.MethodPost && r.URL.Path == "/rest/api/2/search":
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"key":"PROJ-2","fields":{"summary":"Fix fetch","description":"Specific ticket body","labels":[],"status":{"name":"Todo"}}}`))
+			_, _ = w.Write([]byte(`{"total":1,"issues":[{"key":"PROJ-2","fields":{"summary":"Fix fetch","description":"Specific ticket body","labels":[],"status":{"name":"Todo"}}}]}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -146,9 +146,9 @@ func TestFetchCmdRunFetchesLowercaseTicketTarget(t *testing.T) {
 		case r.URL.Path == "/rest/agile/1.0/board/17/sprint/24/issue":
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"total":1,"issues":[{"key":"PROJ-2","fields":{"summary":"Fix fetch","status":{"name":"Todo"}}}]}`))
-		case r.URL.Path == "/rest/api/2/issue/PROJ-2":
+		case r.Method == http.MethodPost && r.URL.Path == "/rest/api/2/search":
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"key":"PROJ-2","fields":{"summary":"Fix fetch","description":"Specific ticket body","labels":[],"status":{"name":"Todo"}}}`))
+			_, _ = w.Write([]byte(`{"total":1,"issues":[{"key":"PROJ-2","fields":{"summary":"Fix fetch","description":"Specific ticket body","labels":[],"status":{"name":"Todo"}}}]}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -193,12 +193,9 @@ func TestFetchCmdRunFetchesSprintByPositionalTarget(t *testing.T) {
 		case r.URL.Path == "/rest/agile/1.0/board/17/sprint/24/issue":
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"total":1,"issues":[{"key":"PROJ-6","fields":{"summary":"Wrong sprint","status":{"name":"Todo"}}}]}`))
-		case r.URL.Path == "/rest/api/2/issue/PROJ-5":
+		case r.Method == http.MethodPost && r.URL.Path == "/rest/api/2/search":
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"key":"PROJ-5","fields":{"summary":"Sprint specific","description":"Only sprint A","labels":[],"status":{"name":"Todo"}}}`))
-		case r.URL.Path == "/rest/api/2/issue/PROJ-6":
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"key":"PROJ-6","fields":{"summary":"Wrong sprint","description":"Should not be fetched","labels":[],"status":{"name":"Todo"}}}`))
+			_, _ = w.Write([]byte(`{"total":1,"issues":[{"key":"PROJ-5","fields":{"summary":"Sprint specific","description":"Only sprint A","labels":[],"status":{"name":"Todo"}}}]}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -247,12 +244,9 @@ func TestFetchCmdRunFiltersSprintsByYear(t *testing.T) {
 		case r.URL.Path == "/rest/agile/1.0/board/17/sprint/24/issue":
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"total":1,"issues":[{"key":"PROJ-25","fields":{"summary":"Old year","status":{"name":"Todo"}}}]}`))
-		case r.URL.Path == "/rest/api/2/issue/PROJ-26":
+		case r.Method == http.MethodPost && r.URL.Path == "/rest/api/2/search":
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"key":"PROJ-26","fields":{"summary":"Current year","description":"Fetched","labels":[],"status":{"name":"Todo"}}}`))
-		case r.URL.Path == "/rest/api/2/issue/PROJ-25":
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"key":"PROJ-25","fields":{"summary":"Old year","description":"Should not fetch","labels":[],"status":{"name":"Todo"}}}`))
+			_, _ = w.Write([]byte(`{"total":1,"issues":[{"key":"PROJ-26","fields":{"summary":"Current year","description":"Fetched","labels":[],"status":{"name":"Todo"}}}]}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -290,6 +284,55 @@ func TestFetchCmdRunFiltersSprintsByYear(t *testing.T) {
 	}
 	if !strings.Contains(output, "fetched sprint Sprint 2026 (1 ticket(s))") {
 		t.Fatalf("expected fetched sprint summary, got %q", output)
+	}
+}
+
+func TestFetchCmdRunWritesSharedTicketToEachSelectedSprintFolder(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/rest/agile/1.0/board/17/sprint":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"isLast":true,"values":[{"id":23,"name":"Sprint A"},{"id":24,"name":"Sprint B"}]}`))
+		case r.URL.Path == "/rest/agile/1.0/board/17/sprint/23/issue":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"total":1,"issues":[{"key":"PROJ-9","fields":{"summary":"Shared ticket","status":{"name":"Todo"}}}]}`))
+		case r.URL.Path == "/rest/agile/1.0/board/17/sprint/24/issue":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"total":1,"issues":[{"key":"PROJ-9","fields":{"summary":"Shared ticket","status":{"name":"Todo"}}}]}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/rest/api/2/search":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"total":1,"issues":[{"key":"PROJ-9","fields":{"summary":"Shared ticket","description":"Shared body","labels":[],"status":{"name":"Todo"}}}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	ctx := &Context{CLI: &CLI{
+		BaseURL: server.URL,
+		Token:   "token",
+		Cfg: config.Config{
+			Project:  "PROJ",
+			BasePath: root,
+			BoardID:  17,
+			BoardByProject: map[string]int{
+				"PROJ": 17,
+			},
+		},
+	}}
+
+	if err := (&FetchCmd{}).Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, sprintName := range []string{"Sprint A", "Sprint B"} {
+		body, err := os.ReadFile(filepath.Join(root, sprintName, "PROJ-9.md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(body), "Shared body") {
+			t.Fatalf("expected shared ticket content in %s, got:\n%s", sprintName, string(body))
+		}
 	}
 }
 
@@ -353,12 +396,9 @@ func TestFetchCmdRunApproximatesSprintTarget(t *testing.T) {
 		case r.URL.Path == "/rest/agile/1.0/board/17/sprint/202/issue":
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"total":1,"issues":[{"key":"PROJ-202","fields":{"summary":"Wrong sprint","status":{"name":"Todo"}}}]}`))
-		case r.URL.Path == "/rest/api/2/issue/PROJ-201":
+		case r.Method == http.MethodPost && r.URL.Path == "/rest/api/2/search":
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"key":"PROJ-201","fields":{"summary":"Approx sprint","description":"Matched via 201","labels":[],"status":{"name":"Todo"}}}`))
-		case r.URL.Path == "/rest/api/2/issue/PROJ-202":
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"key":"PROJ-202","fields":{"summary":"Wrong sprint","description":"Should not be fetched","labels":[],"status":{"name":"Todo"}}}`))
+			_, _ = w.Write([]byte(`{"total":1,"issues":[{"key":"PROJ-201","fields":{"summary":"Approx sprint","description":"Matched via 201","labels":[],"status":{"name":"Todo"}}}]}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -410,15 +450,9 @@ func TestFetchCmdRunPromptsForAmbiguousSprintTarget(t *testing.T) {
 		case r.URL.Path == "/rest/agile/1.0/board/17/sprint/201/issue":
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"total":1,"issues":[{"key":"PROJ-201","fields":{"summary":"Wrong sprint","status":{"name":"Todo"}}}]}`))
-		case r.URL.Path == "/rest/api/2/issue/PROJ-1201":
+		case r.Method == http.MethodPost && r.URL.Path == "/rest/api/2/search":
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"key":"PROJ-1201","fields":{"summary":"Chosen sprint","description":"Picked interactively","labels":[],"status":{"name":"Todo"}}}`))
-		case r.URL.Path == "/rest/api/2/issue/PROJ-120":
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"key":"PROJ-120","fields":{"summary":"Wrong sprint","description":"Should not fetch","labels":[],"status":{"name":"Todo"}}}`))
-		case r.URL.Path == "/rest/api/2/issue/PROJ-201":
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"key":"PROJ-201","fields":{"summary":"Wrong sprint","description":"Should not fetch","labels":[],"status":{"name":"Todo"}}}`))
+			_, _ = w.Write([]byte(`{"total":1,"issues":[{"key":"PROJ-1201","fields":{"summary":"Chosen sprint","description":"Picked interactively","labels":[],"status":{"name":"Todo"}}}]}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -629,9 +663,9 @@ func TestFetchCmdRunPrintsProgressForTicketFetch(t *testing.T) {
 		case r.URL.Path == "/rest/agile/1.0/board/17/sprint/24/issue":
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"total":1,"issues":[{"key":"PROJ-2","fields":{"summary":"Fix fetch","status":{"name":"Todo"}}}]}`))
-		case r.URL.Path == "/rest/api/2/issue/PROJ-2":
+		case r.Method == http.MethodPost && r.URL.Path == "/rest/api/2/search":
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"key":"PROJ-2","fields":{"summary":"Fix fetch","description":"Specific ticket body","labels":[],"status":{"name":"Todo"}}}`))
+			_, _ = w.Write([]byte(`{"total":1,"issues":[{"key":"PROJ-2","fields":{"summary":"Fix fetch","description":"Specific ticket body","labels":[],"status":{"name":"Todo"}}}]}`))
 		default:
 			http.NotFound(w, r)
 		}

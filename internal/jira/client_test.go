@@ -2,8 +2,10 @@ package jira
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 )
@@ -202,5 +204,37 @@ func TestAssignTicketClearsCachedGETs(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&issueHits); got != 2 {
 		t.Fatalf("expected two GET issue hits after invalidation, got %d", got)
+	}
+}
+
+func TestSearchTicketsBySprintIDsUsesBulkSearch(t *testing.T) {
+	t.Setenv("JIRA_CONFIG_DIR", t.TempDir())
+
+	var hits int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/rest/api/2/search" {
+			http.NotFound(w, r)
+			return
+		}
+		atomic.AddInt32(&hits, 1)
+		body, _ := io.ReadAll(r.Body)
+		if got := string(body); !strings.Contains(got, "sprint in (23, 24)") {
+			t.Fatalf("expected sprint JQL in request body, got %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"total":1,"issues":[{"key":"PROJ-7","fields":{"summary":"Bulk fetched","description":"Body","labels":["cli"],"status":{"name":"Todo"}}}]}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "token")
+	tickets, err := client.SearchTicketsBySprintIDs(context.Background(), []int{24, 23})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tickets) != 1 || tickets[0].ID != "PROJ-7" || tickets[0].Description != "Body" {
+		t.Fatalf("expected bulk-fetched ticket, got %#v", tickets)
+	}
+	if got := atomic.LoadInt32(&hits); got != 1 {
+		t.Fatalf("expected one bulk search request, got %d", got)
 	}
 }

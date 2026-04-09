@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -310,6 +311,95 @@ func (c *Client) ListSprintTickets(ctx context.Context, boardID, sprintID int) (
 	return out, nil
 }
 
+func (c *Client) SearchTicketsBySprintIDs(ctx context.Context, sprintIDs []int) ([]IssueTicket, error) {
+	if c.BaseURL == "" || c.Token == "" {
+		return nil, errors.New("missing jira credentials")
+	}
+	if len(sprintIDs) == 0 {
+		return nil, nil
+	}
+	ids := append([]int(nil), sprintIDs...)
+	sort.Ints(ids)
+	parts := make([]string, 0, len(ids))
+	for _, sprintID := range ids {
+		parts = append(parts, strconv.Itoa(sprintID))
+	}
+
+	type searchRequest struct {
+		JQL        string   `json:"jql"`
+		StartAt    int      `json:"startAt"`
+		MaxResults int      `json:"maxResults"`
+		Fields     []string `json:"fields"`
+	}
+	fields := []string{"summary", "description", "priority", "labels", "status", "assignee", "reporter"}
+	out := make([]IssueTicket, 0)
+	startAt := 0
+	for {
+		body, err := json.Marshal(searchRequest{
+			JQL:        fmt.Sprintf("sprint in (%s)", strings.Join(parts, ", ")),
+			StartAt:    startAt,
+			MaxResults: 100,
+			Fields:     fields,
+		})
+		if err != nil {
+			return nil, err
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/rest/api/2/search", bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := c.HTTPClient.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		var parsed struct {
+			StartAt    int `json:"startAt"`
+			MaxResults int `json:"maxResults"`
+			Total      int `json:"total"`
+			Issues     []struct {
+				Key    string `json:"key"`
+				Fields struct {
+					Summary     string          `json:"summary"`
+					Description json.RawMessage `json:"description"`
+					Priority    *struct {
+						Name string `json:"name"`
+					} `json:"priority"`
+					Labels []string `json:"labels"`
+					Status struct {
+						Name string `json:"name"`
+					} `json:"status"`
+					Assignee *struct {
+						DisplayName string `json:"displayName"`
+					} `json:"assignee"`
+					Reporter *struct {
+						DisplayName string `json:"displayName"`
+					} `json:"reporter"`
+				} `json:"fields"`
+			} `json:"issues"`
+		}
+		err = json.NewDecoder(resp.Body).Decode(&parsed)
+		resp.Body.Close()
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode >= 300 {
+			return nil, fmt.Errorf("jira search failed with status %s", resp.Status)
+		}
+		for _, issue := range parsed.Issues {
+			out = append(out, c.parseIssueTicket(issue.Key, issue.Fields))
+		}
+		startAt += len(parsed.Issues)
+		if startAt >= parsed.Total || len(parsed.Issues) == 0 {
+			break
+		}
+	}
+	return out, nil
+}
+
 func (c *Client) GetTicket(ctx context.Context, issueKey string) (IssueTicket, error) {
 	if c.BaseURL == "" || c.Token == "" {
 		return IssueTicket{}, errors.New("missing jira credentials")
@@ -342,24 +432,7 @@ func (c *Client) GetTicket(ctx context.Context, issueKey string) (IssueTicket, e
 		return IssueTicket{}, err
 	}
 
-	ticket := IssueTicket{
-		ID:     parsed.Key,
-		Title:  parsed.Fields.Summary,
-		State:  parsed.Fields.Status.Name,
-		Labels: parsed.Fields.Labels,
-		URL:    strings.TrimRight(c.BaseURL, "/") + "/browse/" + parsed.Key,
-	}
-	ticket.Description = decodeDescription(parsed.Fields.Description)
-	if parsed.Fields.Priority != nil {
-		ticket.Priority = parsed.Fields.Priority.Name
-	}
-	if parsed.Fields.Assignee != nil {
-		ticket.Assignee = parsed.Fields.Assignee.DisplayName
-	}
-	if parsed.Fields.Reporter != nil {
-		ticket.Reporter = parsed.Fields.Reporter.DisplayName
-	}
-	return ticket, nil
+	return c.parseIssueTicket(parsed.Key, parsed.Fields), nil
 }
 
 // decodeDescription handles both plain-string (Jira Server/DC wiki markup) and
@@ -406,6 +479,43 @@ func extractADFText(n *adfNode) string {
 		sb.WriteString("\n")
 	}
 	return sb.String()
+}
+
+func (c *Client) parseIssueTicket(issueKey string, fields struct {
+	Summary     string          `json:"summary"`
+	Description json.RawMessage `json:"description"`
+	Priority    *struct {
+		Name string `json:"name"`
+	} `json:"priority"`
+	Labels []string `json:"labels"`
+	Status struct {
+		Name string `json:"name"`
+	} `json:"status"`
+	Assignee *struct {
+		DisplayName string `json:"displayName"`
+	} `json:"assignee"`
+	Reporter *struct {
+		DisplayName string `json:"displayName"`
+	} `json:"reporter"`
+}) IssueTicket {
+	ticket := IssueTicket{
+		ID:          issueKey,
+		Title:       fields.Summary,
+		State:       fields.Status.Name,
+		Labels:      fields.Labels,
+		Description: decodeDescription(fields.Description),
+		URL:         strings.TrimRight(c.BaseURL, "/") + "/browse/" + issueKey,
+	}
+	if fields.Priority != nil {
+		ticket.Priority = fields.Priority.Name
+	}
+	if fields.Assignee != nil {
+		ticket.Assignee = fields.Assignee.DisplayName
+	}
+	if fields.Reporter != nil {
+		ticket.Reporter = fields.Reporter.DisplayName
+	}
+	return ticket
 }
 
 func (c *Client) GetCurrentUser(ctx context.Context) (User, error) {
